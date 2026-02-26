@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Checkpoint management utilities for BARE model.
+Checkpoint management utilities for TCD-SegFormer model.
 
 This module provides functions for saving, loading, and managing model checkpoints
 to ensure consistent handling across the codebase.
@@ -18,6 +18,10 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from exceptions import FileError, FileNotFoundError
+from utils import get_logger
+
+# Setup module logger
+logger = get_logger()
 
 
 def save_checkpoint(
@@ -58,17 +62,17 @@ def save_checkpoint(
         model_to_save = model.module if hasattr(model, 'module') else model
         model_path = os.path.join(checkpoint_dir, 'pytorch_model.bin')
         torch.save(model_to_save.state_dict(), model_path)
-        logging.info(f"Model state saved to {model_path}")
+        logger.info(f"Model state saved to {model_path}")
 
         # Save optimizer state
         optimizer_path = os.path.join(checkpoint_dir, 'optimizer.pt')
         torch.save(optimizer.state_dict(), optimizer_path)
-        logging.info(f"Optimizer state saved to {optimizer_path}")
+        logger.info(f"Optimizer state saved to {optimizer_path}")
 
         # Save scheduler state
         scheduler_path = os.path.join(checkpoint_dir, 'scheduler.pt')
         torch.save(scheduler.state_dict(), scheduler_path)
-        logging.info(f"Scheduler state saved to {scheduler_path}")
+        logger.info(f"Scheduler state saved to {scheduler_path}")
 
         # Save the full configuration
         if config:
@@ -78,9 +82,9 @@ def save_checkpoint(
                 config_dict = config.to_dict() if hasattr(config, 'to_dict') else config
                 with open(config_path, 'w') as f:
                     json.dump(config_dict, f, indent=2)
-                logging.info(f"Configuration saved to {config_path}")
+                logger.info(f"Configuration saved to {config_path}")
             except Exception as e:
-                logging.warning(f"Could not save configuration to {config_path}: {e}")
+                logger.warning(f"Could not save configuration to {config_path}: {e}")
 
         # Save training state (step, epoch, etc.)
         state_path = os.path.join(checkpoint_dir, 'trainer_state.json')
@@ -89,7 +93,7 @@ def save_checkpoint(
             state['metrics'] = metrics
         with open(state_path, 'w') as f:
             json.dump(state, f, indent=2)
-        logging.info(f"Training state saved to {state_path}")
+        logger.info(f"Training state saved to {state_path}")
 
         # --- Start: Add logic for saving best checkpoint ---
         if metric_to_monitor and metrics and metric_to_monitor in metrics:
@@ -108,7 +112,7 @@ def save_checkpoint(
                         if best_metric_data.get('metric_name') == metric_to_monitor:
                             previous_best_metric = best_metric_data.get('value', previous_best_metric)
                 except Exception as e:
-                    logging.warning(f"Could not read previous best metric from {best_metric_file}: {e}")
+                    logger.warning(f"Could not read previous best metric from {best_metric_file}: {e}")
 
             # Compare current metric with previous best
             is_better = False
@@ -118,14 +122,14 @@ def save_checkpoint(
                 is_better = True
 
             if is_better:
-                logging.info(f"New best metric '{metric_to_monitor}': {current_metric_value:.4f} (previous: {previous_best_metric:.4f}). Saving to {best_checkpoint_dir}")
+                logger.info(f"New best metric '{metric_to_monitor}': {current_metric_value:.4f} (previous: {previous_best_metric:.4f}). Saving to {best_checkpoint_dir}")
 
                 # Remove old best checkpoint directory if it exists
                 if os.path.exists(best_checkpoint_dir):
                     try:
                         shutil.rmtree(best_checkpoint_dir)
                     except Exception as e:
-                        logging.error(f"Failed to remove previous best checkpoint {best_checkpoint_dir}: {e}")
+                        logger.error(f"Failed to remove previous best checkpoint {best_checkpoint_dir}: {e}")
 
                 # Copy the current checkpoint to the best checkpoint directory
                 try:
@@ -144,18 +148,18 @@ def save_checkpoint(
                         json.dump(best_metric_data, f, indent=2)
 
                 except Exception as e:
-                    logging.error(f"Failed to copy or save best checkpoint to {best_checkpoint_dir}: {e}")
+                    logger.error(f"Failed to copy or save best checkpoint to {best_checkpoint_dir}: {e}")
         # --- End: Add logic for saving best checkpoint ---
 
         # Clean up old checkpoints
         cleanup_old_checkpoints(output_dir, max_to_keep)
 
     except Exception as e:
-        logging.error(f"Failed to save checkpoint at step {global_step}: {e}")
+        logger.error(f"Failed to save checkpoint at step {global_step}: {e}")
         # Clean up partially created checkpoint directory if saving failed
         if os.path.exists(checkpoint_dir):
             shutil.rmtree(checkpoint_dir)
-            logging.warning(f"Removed partially created checkpoint directory: {checkpoint_dir}")
+            logger.warning(f"Removed partially created checkpoint directory: {checkpoint_dir}")
 
 
 def cleanup_old_checkpoints(output_dir: str, max_to_keep: int):
@@ -167,7 +171,6 @@ def cleanup_old_checkpoints(output_dir: str, max_to_keep: int):
         output_dir: Directory containing the checkpoints.
         max_to_keep: Maximum number of recent checkpoints to retain.
     """
-    logging.info("Cleaning up older checkpoints...")
     # Get all checkpoint-{step} directories
     checkpoints = []
     best_checkpoint_name = "best_checkpoint" # Define the name
@@ -183,14 +186,14 @@ def cleanup_old_checkpoints(output_dir: str, max_to_keep: int):
                     step = int(d.split("-")[1])
                     checkpoints.append((step, dir_path))
                 except (IndexError, ValueError):
-                    logging.warning(f"Could not parse step from checkpoint directory name: {d}")
+                    logger.warning(f"Could not parse step from checkpoint directory name: {d}")
                     continue
     except FileNotFoundError:
-        logging.warning(f"Checkpoint directory {output_dir} not found during cleanup.")
+        logger.warning(f"Checkpoint directory {output_dir} not found during cleanup.")
         return
 
     if len(checkpoints) <= max_to_keep:
-        logging.info(f"No old checkpoints to remove. Found {len(checkpoints)}, max_to_keep={max_to_keep}")
+        logger.debug(f"No old checkpoints to remove. Found {len(checkpoints)}, max_to_keep={max_to_keep}")
         return
 
     # Sort checkpoints by step number (ascending)
@@ -200,14 +203,14 @@ def cleanup_old_checkpoints(output_dir: str, max_to_keep: int):
     num_to_remove = len(checkpoints) - max_to_keep
     to_remove = checkpoints[:num_to_remove]
 
-    logging.info(f"Found {len(checkpoints)} checkpoints. Keeping {max_to_keep}, removing {num_to_remove}." )
+    logger.info(f"Found {len(checkpoints)} checkpoints. Keeping {max_to_keep}, removing {num_to_remove}." )
 
     for step, dir_path in to_remove:
         try:
             shutil.rmtree(dir_path)
-            logging.info(f"Removed old checkpoint: {dir_path}")
+            logger.info(f"Removed old checkpoint: {dir_path}")
         except OSError as e:
-            logging.error(f"Error removing checkpoint {dir_path}: {e}")
+            logger.error(f"Error removing checkpoint {dir_path}: {e}")
 
 def find_best_checkpoint(output_dir: str) -> Optional[str]:
     """
@@ -225,7 +228,7 @@ def find_best_checkpoint(output_dir: str) -> Optional[str]:
         if os.path.exists(os.path.join(best_checkpoint_dir, "best_metric.json")):
             return best_checkpoint_dir
         else:
-            logging.warning(f"Found {best_checkpoint_dir} but it's missing 'best_metric.json'.")
+            logger.warning(f"Found {best_checkpoint_dir} but it's missing 'best_metric.json'.")
             # Depending on requirements, you might return the path anyway or be strict:
             return None # Strict: require the metric file
             # return best_checkpoint_dir # Less strict: return path if directory exists
@@ -266,7 +269,7 @@ def load_checkpoint(
         model.from_pretrained(checkpoint_dir, map_location=map_location)
     except Exception as e:
         error_msg = f"Failed to load model weights from {checkpoint_dir}: {str(e)}"
-        logging.error(error_msg)
+        logger.error(error_msg)
         raise FileError(error_msg) from e
     
     # Load optimizer and scheduler
@@ -293,11 +296,11 @@ def load_checkpoint(
                 'timestamp': checkpoint.get('timestamp', '')
             }
             
-            logging.info(f"Loaded checkpoint from {checkpoint_dir} (step: {training_state['global_step']})")
+            logger.info(f"Loaded checkpoint from {checkpoint_dir} (step: {training_state['global_step']})")
             
         except Exception as e:
             error_msg = f"Failed to load optimizer/scheduler from {opt_sch_path}: {str(e)}"
-            logging.error(error_msg)
+            logger.error(error_msg)
             raise FileError(error_msg) from e
     
     # Load training state from JSON if available
@@ -310,7 +313,7 @@ def load_checkpoint(
                     if k not in training_state:
                         training_state[k] = v
         except Exception as e:
-            logging.warning(f"Failed to load training state from {json_path}: {str(e)}")
+            logger.warning(f"Failed to load training state from {json_path}: {str(e)}")
     
     return training_state
 
@@ -362,7 +365,7 @@ def verify_checkpoint(checkpoint_dir: str) -> bool:
         True if checkpoint is valid, False otherwise
     """
     if not os.path.exists(checkpoint_dir) or not os.path.isdir(checkpoint_dir):
-        logging.warning(f"Checkpoint directory {checkpoint_dir} not found")
+        logger.warning(f"Checkpoint directory {checkpoint_dir} not found")
         return False
     
     # Support two layouts:
@@ -381,7 +384,7 @@ def verify_checkpoint(checkpoint_dir: str) -> bool:
     if (has_hf_model_file and has_config) or has_generic_model:
         return True
     else:
-        logging.warning(f"No valid checkpoint layout found in {checkpoint_dir}")
+        logger.warning(f"No valid checkpoint layout found in {checkpoint_dir}")
         return False
 
 
@@ -470,7 +473,7 @@ def load_model_for_evaluation(
     """
     # Set up logger
     if logger is None:
-        logger = logging.getLogger(__name__)
+        logger = get_logger()
     
     logger.info(f"Loading model from: {model_path}")
     
@@ -806,36 +809,8 @@ def load_model_for_evaluation(
                 arch = cfg_json.get("architecture", "segformer")
                 num_labels = len(cfg_json.get("id2label", {0:"__background__",1:"tree"}))
                 ignore_index = cfg_json.get("ignore_index", 255)
-                # Build the appropriate wrapper model
-                if arch == "unet":
-                    try:
-                        from model import UNetWrapper
-                        backbone = cfg_json.get("backbone", "resnet34")
-                        model = UNetWrapper(
-                            backbone=backbone,
-                            num_classes=num_labels,
-                            ignore_index=ignore_index,
-                            project_config=config if config is not None else cfg_json,
-                            class_weights=None
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to construct UNetWrapper: {e}")
-                        raise
-                elif arch == "deeplabv3plus":
-                    try:
-                        from model import DeepLabV3PlusWrapper
-                        backbone = cfg_json.get("backbone", "resnet50")
-                        model = DeepLabV3PlusWrapper(
-                            backbone=backbone,
-                            num_classes=num_labels,
-                            ignore_index=ignore_index,
-                            project_config=config if config is not None else cfg_json,
-                            class_weights=None
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to construct DeepLabV3PlusWrapper: {e}")
-                        raise
-                elif arch == "pspnet":
+                # Build the appropriate wrapper model (legacy supports: segformer, pspnet, setr)
+                if arch == "pspnet":
                     try:
                         from model import PSPNetWrapper
                         backbone = cfg_json.get("backbone", "resnet50")
@@ -866,7 +841,7 @@ def load_model_for_evaluation(
                         logger.error(f"Failed to construct SETRWrapper: {e}")
                         raise
                 else:
-                    logger.error(f"Unsupported architecture in generic checkpoint: {arch}")
+                    logger.error(f"Unsupported architecture in generic checkpoint: {arch}. Supported: segformer, pspnet, setr")
                     raise ValueError(f"Unsupported architecture in generic checkpoint: {arch}")
 
                 # Load weights

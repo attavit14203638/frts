@@ -18,7 +18,7 @@ from datasets import load_dataset
 from transformers import SegformerImageProcessor
 from dataset import TCDDataset, create_augmentation_transform, load_and_shuffle_dataset 
 
-from visualization import (plot_augmented_samples, visualize_class_distribution, 
+from visualization import (visualize_class_distribution, 
                            prepare_and_visualize_augmentations, visualize_segmentation, 
                            create_pseudocolor)
 

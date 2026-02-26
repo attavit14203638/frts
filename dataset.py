@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Improved dataset handling for BARE model.
+Improved dataset handling for TCD-SegFormer model.
 
 This module provides a more robust and consistent approach to dataset
 loading, processing, and validation, centralizing functionality that was
@@ -20,7 +20,6 @@ from PIL import Image
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 import random
-import logging # Added logging import
 
 from config import Config # Import Config
 from exceptions import (
@@ -253,7 +252,7 @@ class BaseSegmentationDataset(Dataset):
             # If a class covers more than threshold% of the mask, warn about class imbalance
             if percentage > self.class_imbalance_threshold:
                 percentages = {value: (np.sum(mask == value) / total_pixels) * 100 for value in unique_values}
-                logging.warning(f"Sample {idx} has class imbalance. Label {label} covers {percentage:.2f}% of the mask.")
+                logger.warning(f"Sample {idx} has class imbalance. Label {label} covers {percentage:.2f}% of the mask.")
 
         return True
 
@@ -301,28 +300,6 @@ class BaseSegmentationDataset(Dataset):
 
         return mask
 
-    def create_fallback_sample(self) -> Dict[str, torch.Tensor]:
-        """
-        Create a fallback sample for error recovery.
-
-        Returns:
-            Dictionary with fallback data
-        """
-        # Create a simple dummy sample with one foreground region
-        h, w = 64, 64
-
-        # Create a dummy image (black with a white square)
-        dummy_image = np.zeros((3, h, w), dtype=np.float32)
-        dummy_image[:, 20:40, 20:40] = 1.0
-
-        # Create a dummy mask (background with one foreground region)
-        dummy_mask = np.zeros((h, w), dtype=np.int64)
-        dummy_mask[25:35, 25:35] = 1
-
-        return {
-            'pixel_values': torch.tensor(dummy_image),
-            'labels': torch.tensor(dummy_mask)
-        }
 
 
 class TCDDataset(BaseSegmentationDataset):
@@ -395,19 +372,9 @@ class TCDDataset(BaseSegmentationDataset):
         # Create augmentation transform only if it's the training split
         self.transform = None
         if self.split == 'train' and self.config.get("augmentation", {}).get("apply", False):
-            self.transform = create_augmentation_transform(config) # Uses updated function
-            if self.transform:
-                logger.info(f"Augmentation enabled for '{self.split}' split.")
-            else:
-                logger.info(f"Augmentation configured but no transforms created for '{self.split}' split.")
-        else:
-            logger.info(f"Augmentation disabled for '{self.split}' split.")
+            self.transform = create_augmentation_transform(config)
 
-        # --- Removed Tiling Logic ---
-        # self.train_tile_size = ...
-        # self.train_tile_stride = ...
-        # self.use_training_tiling = ...
-        # self._tile_map = None
+        # --- Removed Tiling Logic (Streamlined) ---
         self._num_samples = len(self.dataset) # Number of samples is just the dataset length now
 
     def __len__(self):
@@ -419,8 +386,6 @@ class TCDDataset(BaseSegmentationDataset):
 
     @handle_dataset_error
     def __getitem__(self, idx):
-        # --- Removed Tiling Index Logic ---
-        # if self.use_training_tiling: ...
         orig_idx = idx # Index directly maps to dataset index
 
         # Load image (ensure PIL format for transforms)
@@ -520,16 +485,10 @@ class TCDDataset(BaseSegmentationDataset):
                 'labels': labels
             }
 
-        except (InvalidSampleError, EmptyMaskError, ShapeMismatchError) as e:
-            # Log specific error and return fallback
-            logger.error(f"Data loading error for index {idx} (orig: {orig_idx}): {e}")
-            # Fallback might need adjustment if crop size is large
-            # For now, keep the small fallback
-            return self.create_fallback_sample()
         except Exception as e:
-            # Catch unexpected errors
-            logger.exception(f"Unexpected error loading data for index {idx} (orig: {orig_idx}): {e}")
-            return self.create_fallback_sample()
+            # Log error and raise - fail fast instead of using complex fallbacks
+            logger.error(f"Data loading error for index {idx} (orig: {orig_idx}): {e}")
+            raise e
 
 
 def load_and_shuffle_dataset(
@@ -832,14 +791,7 @@ def create_dataloaders(
         )
         logger.info("Created SegformerImageProcessor with do_resize=False for training.")
 
-    # Create augmentation transform for training set based on config
-    train_transform = create_augmentation_transform(config)
-    if train_transform:
-        logger.info("Applying data augmentation to the training set.")
-    else:
-        logger.info("No data augmentation applied to the training set.")
-
-    # Create datasets
+    # Create datasets (TCDDataset handles augmentation internally for 'train' split)
     train_dataset = TCDDataset(
         dataset=dataset_dict['train'], # Pass specific train split
         image_processor=image_processor,

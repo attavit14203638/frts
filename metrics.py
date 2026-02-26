@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Evaluation metrics for BARE model.
+Evaluation metrics for TCD-SegFormer model.
 
 This module centralizes the computation of evaluation metrics to ensure
 consistent results across different parts of the codebase.
@@ -654,86 +654,6 @@ def calculate_per_image_metrics(
         per_image_metrics.append(metrics)
     
     return per_image_metrics
-
-
-def find_worst_samples(
-    preds: Union[np.ndarray, torch.Tensor],
-    labels: Union[np.ndarray, torch.Tensor],
-    images: Optional[Union[np.ndarray, torch.Tensor]] = None,
-    metric: str = 'iou_class_1', # Changed default metric
-    num_samples: int = 5,
-    ignore_index: int = 255
-) -> List[Tuple[float, int, Union[np.ndarray, None], np.ndarray, np.ndarray]]:
-    """
-    Find the worst performing samples based on a specific metric.
-    
-    Args:
-        preds: Predicted segmentation maps (N, H, W)
-        labels: Ground truth segmentation maps (N, H, W)
-        images: Original images (N, C, H, W) or (N, H, W, C) (optional)
-        metric: Metric to use for ranking ('mean_iou', 'mean_dice', etc.)
-        num_samples: Number of worst samples to return
-        ignore_index: Index to ignore in evaluation
-        
-    Returns:
-        List of tuples (metric_value, sample_index, image, pred, label) for the worst samples
-    """
-    # Convert to numpy arrays if they're torch tensors
-    if isinstance(preds, torch.Tensor):
-        preds = preds.detach().cpu().numpy()
-    if isinstance(labels, torch.Tensor):
-        labels = labels.detach().cpu().numpy()
-    if images is not None and isinstance(images, torch.Tensor):
-        images = images.detach().cpu().numpy()
-    
-    # Ensure inputs have batch dimension
-    if len(preds.shape) == 2:
-        preds = preds[np.newaxis, ...]
-    if len(labels.shape) == 2:
-        labels = labels[np.newaxis, ...]
-    
-    # Calculate metrics for each sample
-    # Ensure the requested metric (now defaulting to iou_class_1) is calculated
-    per_sample_metrics = calculate_per_image_metrics(
-        preds, labels, ignore_index=ignore_index, metrics_list=[metric], class_metrics=True # Force class_metrics=True if needed for class_1 metrics
-    )
-
-    # Get metric values
-    metric_values = []
-    for m in per_sample_metrics:
-        if metric in m:
-            metric_values.append(m[metric])
-        else:
-            # Handle case where metric (e.g., iou_class_1) wasn't calculated for a sample
-            # (e.g., class 1 not present in that specific label)
-            # Assign a 'good' value (like 1.0 for IoU) so it's not ranked worst,
-            # or handle as needed. For simplicity, let's use a placeholder like -1.0,
-            # assuming normal metrics >= 0.
-            # Using a large negative number for sorting might be problematic if the metric can be negative.
-            # Let's use a placeholder like -1.0, assuming normal metrics >= 0.
-            logger.warning(f"Metric '{metric}' not found for a sample in find_worst_samples. Assigning placeholder value -1.0.")
-            metric_values.append(-1.0)
-
-    # Find indices of worst samples (lower score is worse)
-    worst_indices = np.argsort(metric_values)[:num_samples]
-    
-    # Create result list
-    worst_samples = []
-    for idx in worst_indices:
-        if images is not None:
-            sample_image = images[idx]
-        else:
-            sample_image = None
-        
-        worst_samples.append((
-            metric_values[idx],
-            idx,
-            sample_image,
-            preds[idx],
-            labels[idx]
-        ))
-    
-    return worst_samples
 
 
 def metric_names_to_pretty(metric_name: str) -> str:

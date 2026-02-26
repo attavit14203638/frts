@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Model definition and configuration for BARE model.
+Model definition and configuration for TCD-BARE model.
 """
 
 import torch
@@ -10,7 +10,7 @@ import torch.nn as nn
 import os # Added for os.path.exists
 import torch.nn.functional as F
 from transformers import SegformerForSemanticSegmentation, AutoConfig, SchedulerType as HfSchedulerType
-from transformers.modeling_outputs import SemanticSegmenterOutput
+
 from transformers.optimization import get_scheduler
 
 from typing import Dict, Tuple, Optional, Union, List, Any
@@ -20,6 +20,9 @@ from enum import Enum
 # Import from refactored modules
 from config import Config
 from utils import get_logger
+
+# Note: Legacy codebase supports only SegFormer, PSPNet, SETR
+# Uses standard CrossEntropyLoss only
 
 # Setup module logger
 logger = get_logger()
@@ -33,127 +36,6 @@ class SchedulerType(Enum):
     CONSTANT_WITH_WARMUP = "constant_with_warmup"
     REDUCE_ON_PLATEAU = "reduce_on_plateau"
 
-class BARESegformer(SegformerForSemanticSegmentation):
-    """
-    BARE (Boundary-Aware with Resolution Enhancement) SegFormer implementation.
-    
-    Extends HuggingFace's SegformerForSemanticSegmentation with configurable BARE features:
-    - Configurable train-time upsampling: Upsamples logits to input resolution during training if enabled
-    - During inference: Returns original logits (pipeline handles final upsampling)  
-    - Support for weighted loss to handle class imbalance
-    
-    When both train_time_upsample=True and class_weights are provided, implements full BARE strategy.
-    """
-    def __init__(self, config, project_config: Config, class_weights=None, apply_class_weights=True):
-        super().__init__(config) # config here is the HF SegformerConfig
-        self.project_config = project_config # Store the project's Config object
-        
-        # Explicitly enable gradient checkpointing support
-        self.supports_gradient_checkpointing = True
-        
-        self.output_full_resolution = True
-        
-        if class_weights is not None:
-            logger.info(f"BARESegformer: Using class weights: {class_weights.tolist() if class_weights is not None else 'None'}")
-        self.class_weights = class_weights
-        self.apply_class_weights = apply_class_weights
-        # Focal loss parameters removed as per user request
-
-    def _set_gradient_checkpointing(self, enable=False, gradient_checkpointing_func=None):
-        """
-        Enable gradient checkpointing for memory efficiency.
-        """
-        if hasattr(self.segformer, "gradient_checkpointing"):
-            self.segformer.gradient_checkpointing = enable
-        
-        if hasattr(self.segformer, "encoder"):
-            if hasattr(self.segformer.encoder, "gradient_checkpointing"):
-                self.segformer.encoder.gradient_checkpointing = enable
-            else:
-                setattr(self.segformer.encoder, "gradient_checkpointing", enable)
-    
-    def forward(
-        self,
-        pixel_values: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, SemanticSegmenterOutput]:
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        
-        outputs = super().forward(
-            pixel_values=pixel_values,
-            labels=None,  # Don't compute loss in base model
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True  # Always use return_dict=True for the base model
-        )
-        
-        logits = outputs.logits
-        
-        # Train-time upsampling: Upsample logits only during training (when labels are provided)
-        # During inference (labels=None), return original logits
-        loss = None
-        if labels is not None:
-            # Training phase: upsample logits for loss computation
-            if self.output_full_resolution and pixel_values is not None:
-                input_shape = pixel_values.shape[-2:]
-                interp_mode = self.project_config.get("interpolation_mode", "bilinear")
-                align_corners = self.project_config.get("interpolation_align_corners", False)
-                align_corners_param = align_corners if interp_mode != 'nearest' else None
-
-                upsampled_logits = F.interpolate(
-                    logits,
-                    size=input_shape,
-                    mode=interp_mode,
-                    align_corners=align_corners_param
-                )
-            else:
-                upsampled_logits = logits
-            
-            # Compute loss using upsampled logits
-            if self.apply_class_weights:
-                # Use CrossEntropyLoss with class_weights
-                loss_fct = nn.CrossEntropyLoss(
-                    weight=self.class_weights.to(upsampled_logits.device) if self.class_weights is not None else None,
-                    ignore_index=self.config.semantic_loss_ignore_index
-                )
-            else:
-                # Use standard CrossEntropyLoss without class weights
-                loss_fct = nn.CrossEntropyLoss(
-                    ignore_index=self.config.semantic_loss_ignore_index
-                )
-            loss = loss_fct(upsampled_logits, labels)
-            
-            # During training, return upsampled logits for consistency with loss computation
-            final_logits = upsampled_logits
-        else:
-            # Inference phase: return original (downsampled) logits
-            # Pipeline will handle final upsampling
-            final_logits = logits
-        
-        if not return_dict:
-            # outputs[0] is the original logits, outputs[1:] are hidden_states, attentions etc.
-            # We need to replace outputs.logits with final_logits in the returned tuple.
-            output_tuple = (final_logits,) 
-            if outputs.hidden_states is not None:
-                output_tuple += (outputs.hidden_states,)
-            if outputs.attentions is not None:
-                output_tuple += (outputs.attentions,)
-            
-            return ((loss,) + output_tuple) if loss is not None else output_tuple
-        
-        return SemanticSegmenterOutput(
-            loss=loss,
-            logits=final_logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions
-        )
-
-
-# --- BARE Strategy Helper Functions ---
-
 class _SimpleOutput:
     """Lightweight output container with .loss and .logits to mimic HF outputs."""
     def __init__(self, loss: Optional[torch.Tensor], logits: torch.Tensor) -> None:
@@ -161,32 +43,139 @@ class _SimpleOutput:
         self.logits = logits
 
 
-def _maybe_resize_logits_for_loss(
+class SegFormerWrapper(nn.Module):
+    """
+    Unified SegFormer wrapper with toggleable train-time upsampling and class weights.
+
+    Wraps HuggingFace's SegformerForSemanticSegmentation:
+    - Configurable train-time upsampling: when enabled, upsamples logits to input
+      resolution for loss; when disabled, downscales labels to match decoder output (~H/4).
+    - Support for weighted loss to handle class imbalance
+    - Always returns native decoder logits (~H/4 × W/4); pipeline handles final upsampling
+    """
+    def __init__(
+        self,
+        model_name: str,
+        num_classes: int,
+        ignore_index: int,
+        project_config: Config,
+        class_weights: Optional[torch.Tensor] = None,
+        id2label: Optional[Dict] = None,
+        label2id: Optional[Dict] = None,
+    ):
+        super().__init__()
+        self.project_config = project_config
+        self.ignore_index = ignore_index
+        self.class_weights = class_weights
+
+        # Gradient checkpointing support
+        self.supports_gradient_checkpointing = True
+
+        # Build HF config
+        if id2label is None:
+            id2label = {i: f"class_{i}" for i in range(num_classes)}
+        if label2id is None:
+            label2id = {v: k for k, v in id2label.items()}
+
+        hf_config = AutoConfig.from_pretrained(
+            model_name,
+            num_labels=num_classes,
+            id2label=id2label,
+            label2id=label2id,
+            semantic_loss_ignore_index=ignore_index,
+        )
+
+        try:
+            self.net = SegformerForSemanticSegmentation.from_pretrained(
+                model_name, config=hf_config, ignore_mismatched_sizes=True
+            )
+            logger.info(f"SegFormerWrapper: Loaded pre-trained '{model_name}'")
+        except Exception as e:
+            logger.warning(f"Could not load pre-trained weights for '{model_name}': {e}. Initializing from config.")
+            self.net = SegformerForSemanticSegmentation(config=hf_config)
+
+        # Expose HF config for downstream compatibility (id2label, label2id, etc.)
+        self.config = hf_config
+
+        # Initialize loss function
+        self.loss_fn = nn.CrossEntropyLoss(
+            weight=self.class_weights,
+            ignore_index=self.ignore_index
+        )
+
+        if class_weights is not None:
+            logger.info(f"SegFormerWrapper: Using class weights: {class_weights.tolist()}")
+
+    def _set_gradient_checkpointing(self, enable=False, gradient_checkpointing_func=None):
+        """Enable gradient checkpointing for memory efficiency."""
+        if hasattr(self.net, 'segformer') and hasattr(self.net.segformer, 'encoder'):
+            self.net.segformer.encoder.gradient_checkpointing = enable
+
+    # Delegate save/load to the inner HF model for checkpoint compatibility
+    def state_dict(self, *args, **kwargs):
+        return self.net.state_dict(*args, **kwargs)
+
+    def load_state_dict(self, state_dict, strict=True):
+        return self.net.load_state_dict(state_dict, strict=strict)
+
+    def save_pretrained(self, *args, **kwargs):
+        return self.net.save_pretrained(*args, **kwargs)
+
+    def forward(
+        self,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> _SimpleOutput:
+        # Get logits from HF model without its internal loss computation
+        outputs = self.net(
+            pixel_values=pixel_values,
+            labels=None,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=True,
+        )
+        logits = outputs.logits  # native decoder resolution (~H/4 × W/4)
+
+        loss = None
+        if labels is not None:
+            upsample = self.project_config.get("train_time_upsample", False)
+            mode = self.project_config.get("interpolation_mode", "bilinear")
+            align = self.project_config.get("interpolation_align_corners", False)
+            logits_for_loss, labels_for_loss = _align_logits_labels_for_loss(
+                logits, labels, upsample_logits=upsample, mode=mode, align_corners=align
+            )
+
+            # Compute loss
+            if hasattr(self.loss_fn, 'weight') and self.loss_fn.weight is not None:
+                self.loss_fn.weight = self.loss_fn.weight.to(logits_for_loss.device)
+            loss = self.loss_fn(logits_for_loss, labels_for_loss)
+
+        return _SimpleOutput(loss=loss, logits=logits)
+
+
+# --- BARE Strategy Helper Functions ---
+def _align_logits_labels_for_loss(
     logits: torch.Tensor,
     labels: torch.Tensor,
+    upsample_logits: bool = True,
     mode: str = "bilinear",
     align_corners: Optional[bool] = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Train-time upsampling: resize logits to match label resolution for loss computation."""
+    """Align logits and labels to the same spatial resolution for loss computation."""
     if logits.shape[-2:] == labels.shape[-2:]:
         return logits, labels
-    align_param = align_corners if mode != "nearest" else None
-    resized_logits = F.interpolate(logits, size=labels.shape[-2:], mode=mode, align_corners=align_param)
-    return resized_logits, labels
-
-
-def _cross_entropy_with_optional_weights(
-    logits: torch.Tensor,
-    labels: torch.Tensor,
-    class_weights: Optional[torch.Tensor],
-    ignore_index: int
-) -> torch.Tensor:
-    """Compute cross-entropy loss with optional class weights."""
-    loss_fct = nn.CrossEntropyLoss(
-        weight=class_weights.to(logits.device) if class_weights is not None else None,
-        ignore_index=ignore_index
-    )
-    return loss_fct(logits, labels)
+    if upsample_logits:
+        align_param = align_corners if mode != "nearest" else None
+        resized_logits = F.interpolate(logits, size=labels.shape[-2:], mode=mode, align_corners=align_param)
+        return resized_logits, labels
+    else:
+        resized_labels = F.interpolate(
+            labels.unsqueeze(1).float(), size=logits.shape[-2:], mode="nearest"
+        ).squeeze(1).long()
+        return logits, resized_labels
 
 
 def _build_smp_pspnet(backbone: str, num_classes: int) -> nn.Module:
@@ -200,44 +189,11 @@ def _build_smp_pspnet(backbone: str, num_classes: int) -> nn.Module:
         encoder_name=backbone,
         encoder_weights="imagenet",
         in_channels=3,
-        classes=num_classes
+        classes=num_classes,
+        encoder_depth=3,
+        upsampling=1,  # Output at H/8 resolution (native reduced resolution)
     )
     return model
-
-
-class PSPModule(nn.Module):
-    """Pyramid Scene Parsing Module for PSPNet"""
-    def __init__(self, in_channels: int, out_channels: int, pool_sizes: List[int] = [1, 2, 3, 6]):
-        super().__init__()
-        self.pool_sizes = pool_sizes
-        self.conv_layers = nn.ModuleList()
-        
-        for pool_size in pool_sizes:
-            self.conv_layers.append(nn.Sequential(
-                nn.AdaptiveAvgPool2d(pool_size),
-                nn.Conv2d(in_channels, out_channels // len(pool_sizes), 1),
-                nn.BatchNorm2d(out_channels // len(pool_sizes)),
-                nn.ReLU(inplace=True)
-            ))
-        
-        self.final_conv = nn.Sequential(
-            nn.Conv2d(in_channels + out_channels, out_channels, 3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
-    
-    def forward(self, x):
-        h, w = x.shape[2], x.shape[3]
-        pyramid_features = [x]
-        
-        for conv_layer in self.conv_layers:
-            pooled = conv_layer(x)
-            upsampled = F.interpolate(pooled, size=(h, w), mode='bilinear', align_corners=False)
-            pyramid_features.append(upsampled)
-        
-        concatenated = torch.cat(pyramid_features, dim=1)
-        output = self.final_conv(concatenated)
-        return output
 
 
 
@@ -345,21 +301,24 @@ class PSPNetWrapper(nn.Module):
         self.ignore_index = ignore_index
         self.project_config = project_config
         self.class_weights = class_weights
+        self.loss_fn = nn.CrossEntropyLoss(
+            weight=self.class_weights,
+            ignore_index=self.ignore_index
+        )
 
     def forward(self, pixel_values: torch.Tensor, labels: Optional[torch.LongTensor] = None) -> _SimpleOutput:
         logits = self.net(pixel_values)
         loss = None
         if labels is not None:
-            # Apply train-time upsampling only if enabled
-            if self.project_config.get("train_time_upsample", False):
-                mode = self.project_config.get("interpolation_mode", "bilinear")
-                align = self.project_config.get("interpolation_align_corners", False)
-                logits_for_loss, labels_for_loss = _maybe_resize_logits_for_loss(logits, labels, mode=mode, align_corners=align)
-            else:
-                logits_for_loss, labels_for_loss = logits, labels
-            loss = _cross_entropy_with_optional_weights(
-                logits_for_loss, labels_for_loss, self.class_weights, self.ignore_index
+            upsample = self.project_config.get("train_time_upsample", False)
+            mode = self.project_config.get("interpolation_mode", "bilinear")
+            align = self.project_config.get("interpolation_align_corners", False)
+            logits_for_loss, labels_for_loss = _align_logits_labels_for_loss(
+                logits, labels, upsample_logits=upsample, mode=mode, align_corners=align
             )
+            if hasattr(self.loss_fn, 'weight') and self.loss_fn.weight is not None:
+                self.loss_fn.weight = self.loss_fn.weight.to(logits_for_loss.device)
+            loss = self.loss_fn(logits_for_loss, labels_for_loss)
         return _SimpleOutput(loss=loss, logits=logits)
 
 
@@ -386,39 +345,27 @@ class SETRWrapper(nn.Module):
         self.project_config = project_config
         self.class_weights = class_weights
         self.input_size = input_size
+        self.loss_fn = nn.CrossEntropyLoss(
+            weight=self.class_weights,
+            ignore_index=self.ignore_index
+        )
         logger.info(f"SETRWrapper initialized for native {input_size}×{input_size} processing")
 
     def forward(self, pixel_values: torch.Tensor, labels: Optional[torch.LongTensor] = None) -> _SimpleOutput:
-        # Store original size for potential upsampling
-        original_size = pixel_values.shape[-2:]
-        
-        # Process with SETR at native resolution (no downsampling)
-        # The ViT backbone now supports the native input size directly
+        # SETR decoder outputs at (H/patch_size × W/patch_size) resolution
         logits = self.net(pixel_values)
-        
-        # Only upsample if the model output doesn't match input size
-        # This ensures logits match input resolution while supporting native processing
-        if logits.shape[-2:] != original_size:
-            logger.debug(f"SETR output {logits.shape[-2:]} != input {original_size}, upsampling to match input size")
-            logits = F.interpolate(
-                logits,
-                size=original_size,
-                mode='bilinear',
-                align_corners=False
-            )
-        
+
         loss = None
         if labels is not None:
-            # Apply train-time upsampling only if enabled
-            if self.project_config.get("train_time_upsample", False):
-                mode = self.project_config.get("interpolation_mode", "bilinear")
-                align = self.project_config.get("interpolation_align_corners", False)
-                logits_for_loss, labels_for_loss = _maybe_resize_logits_for_loss(logits, labels, mode=mode, align_corners=align)
-            else:
-                logits_for_loss, labels_for_loss = logits, labels
-            loss = _cross_entropy_with_optional_weights(
-                logits_for_loss, labels_for_loss, self.class_weights, self.ignore_index
+            upsample = self.project_config.get("train_time_upsample", False)
+            mode = self.project_config.get("interpolation_mode", "bilinear")
+            align = self.project_config.get("interpolation_align_corners", False)
+            logits_for_loss, labels_for_loss = _align_logits_labels_for_loss(
+                logits, labels, upsample_logits=upsample, mode=mode, align_corners=align
             )
+            if hasattr(self.loss_fn, 'weight') and self.loss_fn.weight is not None:
+                self.loss_fn.weight = self.loss_fn.weight.to(logits_for_loss.device)
+            loss = self.loss_fn(logits_for_loss, labels_for_loss)
         return _SimpleOutput(loss=loss, logits=logits)
 
 def create_scheduler(
@@ -542,7 +489,20 @@ def create_model(
     architecture = config.get("architecture", "segformer")
     model_name = config.get("model_name")
     backbone = config.get("backbone", "resnet34")
-    logger.info(f"Attempting to load architecture: {architecture} (model_name={model_name}, backbone={backbone})")
+    
+    # Build architecture-specific identifier for logging
+    if architecture == "segformer":
+        model_identifier = model_name
+        logger.info(f"Attempting to load architecture: {architecture} (model_name={model_name})")
+    elif architecture == "pspnet":
+        model_identifier = backbone
+        logger.info(f"Attempting to load architecture: {architecture} (backbone={backbone})")
+    elif architecture == "setr":
+        model_identifier = f"SETR (embed_dim={config.get('setr_embed_dim', 768)}, patch_size={config.get('setr_patch_size', 16)})"
+        logger.info(f"Attempting to load architecture: {architecture} (embed_dim={config.get('setr_embed_dim', 768)}, patch_size={config.get('setr_patch_size', 16)})")
+    else:
+        model_identifier = architecture
+        logger.info(f"Attempting to load architecture: {architecture}")
 
     if class_weights is not None:
         logger.info(f"Class weights enabled. Weights: {class_weights.tolist()}")
@@ -556,89 +516,16 @@ def create_model(
     num_labels = len(id2label)
 
     if architecture == "segformer":
-        model_hf_config = AutoConfig.from_pretrained(
-            model_name,
-            num_labels=num_labels,
+        logger.info(f"Initializing SegFormerWrapper for '{model_name}'")
+        model = SegFormerWrapper(
+            model_name=model_name,
+            num_classes=num_labels,
+            ignore_index=config.get("ignore_index", 255),
+            project_config=config,
+            class_weights=class_weights if config.get("class_weights_enabled", False) else None,
             id2label=id2label,
             label2id=label2id,
         )
-
-    if architecture == "segformer" and config.get("train_time_upsample", False):
-        logger.info(f"Train-time upsampling enabled. Initializing BARESegformer for '{model_name}'")
-        try:
-            base_model = SegformerForSemanticSegmentation.from_pretrained(
-                model_name,
-                config=model_hf_config,
-                ignore_mismatched_sizes=True,
-            )
-            logger.info(f"Successfully loaded pre-trained weights for base Segformer '{model_name}'.")
-            model = BARESegformer(
-                config=model_hf_config,
-                project_config=config,
-                class_weights=class_weights,
-                apply_class_weights=class_weights is not None
-            )
-            model.segformer = base_model.segformer
-            model.decode_head = base_model.decode_head
-            logger.info(f"Successfully created BARESegformer and copied pre-trained weights from '{model_name}'.")
-        except Exception as e:
-            logger.warning(f"Could not load pre-trained weights for BARESegformer base ('{model_name}'): {e}. Initializing BARESegformer from scratch.")
-            model = BARESegformer(
-                config=model_hf_config,
-                project_config=config,
-                class_weights=class_weights,
-                apply_class_weights=class_weights is not None
-            )
-    elif architecture == "segformer":
-        logger.info(f"Train-time upsampling disabled. Initializing standard SegformerForSemanticSegmentation for '{model_name}'.")
-        try:
-            model = SegformerForSemanticSegmentation.from_pretrained(
-                model_name,
-                config=model_hf_config,
-                ignore_mismatched_sizes=True,
-            )
-            logger.info(f"Successfully loaded pre-trained standard SegformerForSemanticSegmentation: '{model_name}'.")
-        except Exception as e:
-            logger.error(f"Failed to load standard SegformerForSemanticSegmentation model '{model_name}': {e}. Raising error.")
-            raise
-
-        if class_weights is not None and config.get("class_weights_enabled", False):
-            logger.info(f"Class weights will be applied to standard Segformer via a custom loss wrapper.")
-            original_forward = model.forward
-            def forward_with_weighted_loss(*args, **kwargs):
-                outputs = original_forward(*args, **kwargs)
-                if 'labels' in kwargs and kwargs['labels'] is not None and outputs.loss is not None:
-                    labels = kwargs['labels']
-                    logits = outputs.logits
-                    
-                    # Apply train-time upsampling only if enabled in config (consistent with other architectures)
-                    if logits.shape[-2:] != labels.shape[-2:] and config.get("train_time_upsample", False):
-                        interp_mode = 'bilinear'
-                        align_corners = False
-                        if hasattr(model, 'project_config'):
-                            interp_mode = model.project_config.get('interpolation_mode', 'bilinear')
-                            align_corners = model.project_config.get('interpolation_align_corners', False)
-                        align_corners_param = align_corners if interp_mode != 'nearest' else None
-                        # Train-time upsampling: apply loss at original resolution
-                        logits_for_loss = F.interpolate(logits, size=labels.shape[-2:], mode=interp_mode, align_corners=align_corners_param)
-                        labels_for_loss = labels
-                    else:
-                        logits_for_loss = logits
-                        labels_for_loss = labels
-                    loss_fct = nn.CrossEntropyLoss(weight=class_weights.to(logits.device), ignore_index=model.config.semantic_loss_ignore_index)
-                    weighted_loss = loss_fct(logits_for_loss, labels_for_loss)
-                    outputs.loss = weighted_loss
-                return outputs
-            model.forward = forward_with_weighted_loss
-            
-            # Update log message to reflect the conditional behavior
-            if config.get("train_time_upsample", False):
-                logger.info("Applied custom weighted loss wrapper to standard Segformer with BARE strategy (class weights + train-time upsampling).")
-            else:
-                logger.info("Applied custom weighted loss wrapper to standard Segformer with class weights only (no train-time upsampling).")
-        else:
-            logger.info("No class weights provided or class weights disabled for standard Segformer. Standard loss calculation will apply.")
-
     elif architecture == "pspnet":
         logger.info(f"Initializing PSPNet (backbone={backbone})")
         model = PSPNetWrapper(
@@ -685,7 +572,7 @@ def create_model(
         else:
             logger.warning(f"resume_from_checkpoint is True, but path '{model_weights_path}' is invalid or not found. Model will use initial/pretrained weights.")
     else:
-        logger.info(f"Not resuming model weights from checkpoint. Model uses initial/pretrained weights for {model_name}.")
+        logger.info(f"Not resuming model weights from checkpoint. Model uses initial/pretrained weights for {model_identifier}.")
 
 
     optimizer = create_optimizer(
@@ -768,16 +655,16 @@ def create_model(
                     logger.info("Manually set model.segformer.encoder.gradient_checkpointing = True.")
                 else:
                     logger.warning(f"Model {model.__class__.__name__} claims support but no known method to enable gradient checkpointing was found.")
-            elif isinstance(model, SegformerForSemanticSegmentation) and not isinstance(model, BARESegformer): 
+            elif isinstance(model, SegformerForSemanticSegmentation):
                 if hasattr(model, 'segformer') and hasattr(model.segformer, 'encoder'):
                     model.segformer.encoder.gradient_checkpointing = True
-                    logger.info("Manually set model.segformer.encoder.gradient_checkpointing = True for standard Segformer.")
+                    logger.info("Manually set model.segformer.encoder.gradient_checkpointing = True for SegFormer.")
                 else:
-                    logger.warning(f"Standard Segformer {model_name} does not have .segformer.encoder. Cannot enable gradient checkpointing.")
+                    logger.warning(f"SegFormer {model_identifier} does not have .segformer.encoder. Cannot enable gradient checkpointing.")
             else: 
                  logger.warning(f"Gradient checkpointing not configured for model type: {model.__class__.__name__}. Check model's `supports_gradient_checkpointing` or structure.")
         except Exception as e:
-            logger.error(f"Error during gradient checkpointing setup: {e}", exc_info=True)
+            logger.error(f"Error during gradient checkpointing setup: {e}")
     else:
         logger.info("Configuration 'gradient_checkpointing' is False. Skipping gradient checkpointing setup.")
     logger.info(f"--- Model Creation Complete ---")

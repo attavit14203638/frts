@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Visualization utilities for BARE model.
+Visualization utilities for TCD-SegFormer model.
 
 This module provides functions for visualizing segmentation results,
 training progress, model confidence, class activation maps, and other aspects
@@ -547,235 +547,6 @@ def plot_confusion_matrix(
     return fig
 
 
-def plot_augmented_samples(
-    original_sample: Dict[str, Any],
-    transform: Callable,
-    num_augmented: int = 4,
-    figsize: Tuple[int, int] = (15, 8),
-    save_path: Optional[str] = None,
-    id2label: Optional[Dict[int, str]] = None,
-    alpha: float = 0.5
-) -> plt.Figure:
-    """
-    Visualizes the effect of augmentation transforms on a single sample.
-
-    Args:
-        original_sample: A dictionary containing the original 'image' and 'mask' (PIL Images or numpy arrays).
-        transform: The augmentation transform function to apply.
-        num_augmented: Number of augmented versions to generate and display.
-        figsize: Figure size.
-        save_path: Path to save the figure.
-        id2label: Dictionary mapping class indices to class names for mask visualization.
-        alpha: Transparency for segmentation overlay.
-
-    Returns:
-        Matplotlib figure.
-    """
-    # Ensure input is in the expected format (PIL Image) for transforms
-    orig_image = original_sample['image']
-    orig_mask = original_sample['mask']
-    if isinstance(orig_image, np.ndarray):
-        orig_image = Image.fromarray(orig_image)
-    if isinstance(orig_mask, np.ndarray):
-        orig_mask = Image.fromarray(orig_mask.astype(np.uint8), mode='L')
-
-    # Create figure
-    num_cols = num_augmented + 1 # Original + Augmented versions
-    fig, axes = plt.subplots(2, num_cols, figsize=figsize) # Row 0: Images, Row 1: Masks/Overlays
-
-    # --- Plot Original Sample ---
-    # Original Image
-    axes[0, 0].imshow(np.array(orig_image))
-    axes[0, 0].set_title("Original Image")
-    axes[0, 0].axis("off")
-
-    # Original Mask Overlay
-    orig_mask_np = np.array(orig_mask)
-    orig_overlay = visualize_segmentation(np.array(orig_image), orig_mask_np, id2label=id2label, alpha=alpha)
-    axes[1, 0].imshow(orig_overlay)
-    axes[1, 0].set_title("Original Mask")
-    axes[1, 0].axis("off")
-
-    # --- Plot Augmented Samples ---
-    for i in range(num_augmented):
-        # Apply transform
-        # Important: Ensure transform receives copies if it modifies inplace
-        augmented_sample = transform({'image': orig_image.copy(), 'mask': orig_mask.copy()})
-        aug_image = augmented_sample['image']
-        aug_mask = augmented_sample['mask']
-
-        # Convert back to numpy for display if needed
-        if isinstance(aug_image, Image.Image):
-            aug_image_np = np.array(aug_image)
-        else:
-             aug_image_np = aug_image # Assume numpy or tensor convertible
-             if isinstance(aug_image_np, torch.Tensor):
-                 aug_image_np = tensor_to_image(aug_image_np)
-
-        if isinstance(aug_mask, Image.Image):
-            aug_mask_np = np.array(aug_mask)
-        else:
-             aug_mask_np = aug_mask
-             if isinstance(aug_mask_np, torch.Tensor):
-                 aug_mask_np = aug_mask_np.cpu().numpy()
-
-
-        # Augmented Image
-        axes[0, i + 1].imshow(aug_image_np)
-        axes[0, i + 1].set_title(f"Augmented {i+1}")
-        axes[0, i + 1].axis("off")
-
-        # Augmented Mask Overlay
-        aug_overlay = visualize_segmentation(aug_image_np, aug_mask_np, id2label=id2label, alpha=alpha)
-        axes[1, i + 1].imshow(aug_overlay)
-        axes[1, i + 1].set_title(f"Augmented Mask {i+1}")
-        axes[1, i + 1].axis("off")
-
-    plt.tight_layout()
-
-    # Save if requested
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-
-    plt.close(fig) # Add plt.close()
-    return fig
-
-
-def plot_worst_predictions(
-    worst_samples: List[Tuple[float, int, Union[np.ndarray, None], np.ndarray, np.ndarray]],
-    figsize: Tuple[int, int] = (20, 4),
-    metric_name: str = "IoU",
-    save_dir: Optional[str] = None,
-    id2label: Optional[Dict[int, str]] = None
-) -> List[plt.Figure]:
-    """
-    Plot worst predictions for visual inspection.
-
-    Args:
-        worst_samples: List of tuples (metric_value, sample_index, image, pred, label)
-        figsize: Base figure size per sample
-        metric_name: Name of the metric used for ranking
-        save_dir: Directory to save figures (if None, doesn't save)
-        id2label: Dictionary mapping class indices to class names
-
-    Returns:
-        List of Matplotlib figures
-    """
-    figures = []
-
-    for i, (metric_value, sample_idx, image, pred, label) in enumerate(worst_samples):
-        # Create figure for this sample
-        title = f"Sample #{sample_idx} - {metric_name}: {metric_value:.4f}"
-        
-        # Handle case where image is not provided
-        if image is None:
-            # Create a default image (a gray canvas)
-            h, w = pred.shape
-            image = np.ones((h, w, 3), dtype=np.uint8) * 128
-        
-        # Plot comparison
-        fig = plot_segmentation_comparison(
-            image=image,
-            pred=pred,
-            target=label,
-            title=title,
-            figsize=figsize,
-            id2label=id2label
-        )
-        
-        figures.append(fig)
-        
-        # Save figure if requested
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)
-            save_path = os.path.join(save_dir, f"worst_{i+1}_sample_{sample_idx}.png")
-            fig.savefig(save_path, dpi=300, bbox_inches="tight")
-        
-        plt.close(fig) # Always close the figure after saving or if not saving
-    
-    # Return an empty list as figures are closed internally now
-    return [] 
-
-
-def plot_dataset_samples(
-    dataset,
-    num_samples: int = 5,
-    figsize: Tuple[int, int] = (15, 5 * 5),
-    alpha: float = 0.5,
-    save_path: Optional[str] = None,
-    id2label: Optional[Dict[int, str]] = None,
-    random_state: Optional[int] = None
-) -> plt.Figure:
-    """
-    Plot sample images from a dataset for inspection.
-
-    Args:
-        dataset: PyTorch Dataset with 'pixel_values' and 'labels' keys
-        num_samples: Number of samples to plot
-        figsize: Figure size
-        alpha: Transparency for segmentation overlay
-        save_path: Path to save the figure (if None, doesn't save)
-        id2label: Dictionary mapping class indices to class names
-        random_state: Random state for reproducible sampling
-
-    Returns:
-        Matplotlib figure
-    """
-    # Set random state if provided
-    if random_state is not None:
-        np.random.seed(random_state)
-    
-    # Sample indices
-    indices = np.random.choice(len(dataset), min(num_samples, len(dataset)), replace=False)
-    
-    # Create figure
-    fig = plt.figure(figsize=figsize)
-    
-    for i, idx in enumerate(indices):
-        sample = dataset[idx]
-        
-        # Get image and mask
-        image = sample['pixel_values']
-        mask = sample['labels']
-        
-        # Convert to numpy arrays
-        if isinstance(image, torch.Tensor):
-            image = tensor_to_image(image)
-        if isinstance(mask, torch.Tensor):
-            mask = mask.detach().cpu().numpy()
-        
-        # Create subplots for this sample
-        gs = gridspec.GridSpecFromSubplotSpec(1, 3, subplot_spec=gridspec.GridSpec(num_samples, 1)[i])
-        
-        # Plot original image
-        ax_image = fig.add_subplot(gs[0])
-        ax_image.imshow(image)
-        ax_image.set_title(f"Sample {idx} - Image")
-        ax_image.axis("off")
-        
-        # Plot mask
-        ax_mask = fig.add_subplot(gs[1])
-        mask_vis = create_pseudocolor(mask, colormap='viridis')
-        ax_mask.imshow(mask_vis)
-        ax_mask.set_title(f"Sample {idx} - Mask")
-        ax_mask.axis("off")
-        
-        # Plot overlay
-        ax_overlay = fig.add_subplot(gs[2])
-        overlay = visualize_segmentation(image, mask, id2label=id2label, alpha=alpha)
-        ax_overlay.imshow(overlay)
-        ax_overlay.set_title(f"Sample {idx} - Overlay")
-        ax_overlay.axis("off")
-    
-    # Adjust layout
-    plt.tight_layout()
-    
-    # Save figure if requested
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-
-    plt.close(fig) # Add plt.close()
-    return fig
 
 
 def plot_training_metrics(
@@ -851,72 +622,6 @@ def plot_training_metrics(
     return fig
 
 
-def prepare_and_visualize_augmentations(
-    dataset,
-    sample_idx: int,
-    transform,
-    save_path: str,
-    num_augmented: int = 4,
-    logger = None,
-    id2label: Optional[Dict[int, str]] = None
-) -> bool:
-    """
-    Prepares and visualizes the effect of augmentation on a dataset sample.
-    This function handles extracting the original image and mask from a dataset
-    and applying the visualizations.
-    
-    Args:
-        dataset: A dataset with access to original samples via dataset.dataset property
-        sample_idx: The index of the sample to visualize
-        transform: The augmentation transform to apply
-        save_path: Path to save the visualization
-        num_augmented: Number of augmented versions to generate and visualize
-        logger: Optional logger for logging messages
-        id2label: Optional dictionary mapping class indices to class names
-        
-    Returns:
-        Boolean indicating success
-    """
-    try:
-        # Access the original image and mask (before image processor transforms)
-        original_item = dataset.dataset[sample_idx]
-        original_image = original_item["image"]
-        
-        # Handle TiffImageFile objects by converting to numpy array if needed
-        if hasattr(original_image, 'mode'):  # It's a PIL Image object
-            original_image = np.array(original_image)
-        
-        # Get the mask using the dataset's mask feature name
-        mask_feature = getattr(dataset, 'mask_feature', 'annotation')
-        original_mask = np.array(original_item[mask_feature])
-        
-        # Apply basic mask preprocessing if the dataset provides it
-        if hasattr(dataset, 'preprocess_mask'):
-            original_mask = dataset.preprocess_mask(original_mask)
-        
-        # Log the visualization attempt
-        if logger:
-            logger.info(f"Visualizing augmentations for sample {sample_idx}...")
-        
-        # Generate the visualization using the existing plot function
-        plot_augmented_samples(
-            original_sample={'image': original_image, 'mask': original_mask},
-            transform=transform,
-            num_augmented=num_augmented,
-            save_path=save_path,
-            id2label=id2label
-        )
-        
-        # Log success
-        if logger:
-            logger.info(f"Augmentation visualization saved to {save_path}")
-        
-        return True
-    except Exception as e:
-        # Log the error
-        if logger:
-            logger.error(f"Error visualizing augmentations for sample {sample_idx}: {e}")
-        return False
 
 
 def plot_loss_reduction(
@@ -2319,3 +2024,138 @@ def create_confidence_visualization(
                          alpha * confidence_colored.astype(np.float32)).astype(np.uint8)
 
     return confidence_overlay, confidence_map
+
+
+def prepare_and_visualize_augmentations(
+    dataset,
+    sample_idx: int,
+    transform: Callable,
+    save_path: Optional[str] = None,
+    num_augmented: int = 5,
+    logger: Optional[logging.Logger] = None,
+    id2label: Optional[Dict[int, str]] = None
+) -> bool:
+    """
+    Prepare and visualize augmented versions of a dataset sample.
+    
+    Applies the given transform multiple times to the same sample and
+    displays the original alongside the augmented versions.
+    
+    Args:
+        dataset: Dataset object supporting __getitem__ that returns dict with 'image' and 'mask'/'labels'
+        sample_idx: Index of the sample to augment
+        transform: Augmentation transform callable
+        save_path: Optional path to save the visualization
+        num_augmented: Number of augmented versions to generate
+        logger: Optional logger instance
+        id2label: Optional label mapping for visualization
+        
+    Returns:
+        True if visualization was successful, False otherwise
+    """
+    if logger is None:
+        logger = get_logger()
+    
+    try:
+        sample = dataset[sample_idx]
+        
+        # Extract image and mask from sample
+        if isinstance(sample, dict):
+            image = sample.get('image', sample.get('pixel_values'))
+            mask = sample.get('mask', sample.get('labels'))
+        elif isinstance(sample, (tuple, list)):
+            image, mask = sample[0], sample[1]
+        else:
+            logger.warning(f"Unsupported sample type: {type(sample)}")
+            return False
+        
+        # Convert to numpy if tensor
+        if isinstance(image, torch.Tensor):
+            if image.dim() == 3 and image.shape[0] in [1, 3]:
+                image = image.permute(1, 2, 0).cpu().numpy()
+            else:
+                image = image.cpu().numpy()
+        if isinstance(image, Image.Image):
+            image = np.array(image)
+            
+        if isinstance(mask, torch.Tensor):
+            mask = mask.cpu().numpy()
+        if isinstance(mask, Image.Image):
+            mask = np.array(mask)
+        
+        # Normalize image to [0, 1] for display
+        if image.dtype == np.uint8:
+            image_display = image.astype(np.float32) / 255.0
+        elif image.max() > 1.0:
+            image_display = (image - image.min()) / (image.max() - image.min() + 1e-8)
+        else:
+            image_display = image.copy()
+        
+        # Generate augmented versions
+        augmented_images = []
+        augmented_masks = []
+        for _ in range(num_augmented):
+            try:
+                aug_result = transform(image=image, mask=mask)
+                aug_img = aug_result['image']
+                aug_msk = aug_result['mask']
+                
+                if isinstance(aug_img, torch.Tensor):
+                    if aug_img.dim() == 3 and aug_img.shape[0] in [1, 3]:
+                        aug_img = aug_img.permute(1, 2, 0).cpu().numpy()
+                    else:
+                        aug_img = aug_img.cpu().numpy()
+                
+                if isinstance(aug_msk, torch.Tensor):
+                    aug_msk = aug_msk.cpu().numpy()
+                
+                # Normalize for display
+                if aug_img.dtype == np.uint8:
+                    aug_img = aug_img.astype(np.float32) / 255.0
+                elif aug_img.max() > 1.0:
+                    aug_img = (aug_img - aug_img.min()) / (aug_img.max() - aug_img.min() + 1e-8)
+                
+                augmented_images.append(aug_img)
+                augmented_masks.append(aug_msk)
+            except Exception as e:
+                logger.warning(f"Augmentation failed for iteration: {e}")
+                continue
+        
+        if not augmented_images:
+            logger.warning("No augmented samples were generated successfully.")
+            return False
+        
+        # Plot: original + augmented versions
+        n_cols = 1 + len(augmented_images)
+        fig, axes = plt.subplots(2, n_cols, figsize=(4 * n_cols, 8))
+        
+        # Original
+        axes[0, 0].imshow(np.clip(image_display, 0, 1))
+        axes[0, 0].set_title("Original Image")
+        axes[0, 0].axis('off')
+        axes[1, 0].imshow(mask, cmap='gray')
+        axes[1, 0].set_title("Original Mask")
+        axes[1, 0].axis('off')
+        
+        # Augmented
+        for i, (aug_img, aug_msk) in enumerate(zip(augmented_images, augmented_masks)):
+            axes[0, i + 1].imshow(np.clip(aug_img, 0, 1))
+            axes[0, i + 1].set_title(f"Augmented {i + 1}")
+            axes[0, i + 1].axis('off')
+            axes[1, i + 1].imshow(aug_msk, cmap='gray')
+            axes[1, i + 1].set_title(f"Aug Mask {i + 1}")
+            axes[1, i + 1].axis('off')
+        
+        plt.tight_layout()
+        
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            fig.savefig(save_path, dpi=150, bbox_inches='tight')
+            logger.info(f"Augmentation visualization saved to {save_path}")
+        
+        plt.close(fig)
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to visualize augmentations: {e}")
+        return False

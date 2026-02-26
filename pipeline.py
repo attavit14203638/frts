@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Centralized pipeline for BARE.
+Centralized pipeline for TCD-BARE.
 
 This module provides unified entry points for training, evaluation, and prediction
-of the BARE model, consolidating functionality that was previously spread
+of the TCD-BARE model, consolidating functionality that was previously spread
 across multiple files.
 """
 
@@ -34,14 +34,14 @@ from metrics import (
     categorize_errors, calculate_error_statistics,
     ERROR_CATEGORIES, calculate_confusion_matrix)
 from visualization import (
-    plot_worst_predictions, plot_training_metrics,
+    plot_training_metrics,
     plot_prediction_confidence,
     plot_confusion_matrix,
     plot_error_analysis_map,
     tensor_to_image,
     plot_prediction_comparison_with_confidence,
     visualize_segmentation,
-    plot_learning_rate_schedule # Added import
+    plot_learning_rate_schedule
 )
 from image_utils import (
     ensure_rgb,
@@ -53,97 +53,30 @@ from utils import set_seed, log_or_print
 def ensure_mask_dimensions(mask_np, target_shape, logger=None, context="", is_label_mask=True):
     """
     Ensures the mask (numpy array) matches the target shape (H, W).
-    Tries multiple resizing methods with validation and logs each step.
-    Args:
-        mask_np: np.ndarray, mask to resize (H, W) or (H, W, C)
-        target_shape: tuple, (H, W)
-        logger: logger for logging
-        context: str, context for logging
-        is_label_mask: bool, if True, use nearest neighbor interpolation
-    Returns:
-        mask_np: np.ndarray, resized mask with shape target_shape
+    Uses OpenCV for resizing as the standard method.
     """
-    import torch
     import cv2
-    from PIL import Image
-
+    
     orig_shape = mask_np.shape
     target_h, target_w = target_shape
     log_prefix = f"[ensure_mask_dimensions]{'['+context+']' if context else ''}"
 
     if orig_shape[:2] == (target_h, target_w):
-        if logger:
-            logger.debug(f"{log_prefix} Mask already matches target shape: {orig_shape}")
         return mask_np
 
-    # Try PyTorch F.interpolate
-    try:
-        mode = "nearest" if is_label_mask else "bilinear"
-        mask_tensor = torch.from_numpy(mask_np).unsqueeze(0).unsqueeze(0).float() if mask_np.ndim == 2 else torch.from_numpy(mask_np).permute(2,0,1).unsqueeze(0).float()
-        resized = torch.nn.functional.interpolate(
-            mask_tensor,
-            size=(target_h, target_w),
-            mode=mode,
-            align_corners=False if mode == "bilinear" else None
-        )
-        resized_np = resized.squeeze().cpu().numpy().astype(mask_np.dtype)
-        if resized_np.shape[:2] == (target_h, target_w):
-            if logger:
-                logger.warning(f"{log_prefix} Resized mask using torch F.interpolate ({mode}) from {orig_shape} to {resized_np.shape} (unexpected mismatch)") # Changed to WARNING
-            return resized_np
-    except Exception as e:
-        if logger:
-            logger.warning(f"{log_prefix} F.interpolate ({mode}) failed: {e}")
+    # Log warning about resizing
+    if logger:
+        logger.warning(f"{log_prefix} Resizing mask from {orig_shape} to {target_shape}")
 
-    # Try F.interpolate with other mode
-    try:
-        alt_mode = "bilinear" if mode == "nearest" else "nearest"
-        mask_tensor = torch.from_numpy(mask_np).unsqueeze(0).unsqueeze(0).float() if mask_np.ndim == 2 else torch.from_numpy(mask_np).permute(2,0,1).unsqueeze(0).float()
-        resized = torch.nn.functional.interpolate(
-            mask_tensor,
-            size=(target_h, target_w),
-            mode=alt_mode,
-            align_corners=False if alt_mode == "bilinear" else None
-        )
-        resized_np = resized.squeeze().cpu().numpy().astype(mask_np.dtype)
-        if resized_np.shape[:2] == (target_h, target_w):
-            if logger:
-                logger.warning(f"{log_prefix} Resized mask using torch F.interpolate ({alt_mode}) from {orig_shape} to {resized_np.shape} (unexpected mismatch)") # Changed to WARNING
-            return resized_np
-    except Exception as e:
-        if logger:
-            logger.warning(f"{log_prefix} F.interpolate ({alt_mode}) failed: {e}")
-
-    # Try OpenCV
     try:
         interp = cv2.INTER_NEAREST if is_label_mask else cv2.INTER_LINEAR
+        # OpenCV uses (width, height)
         resized_np = cv2.resize(mask_np, (target_w, target_h), interpolation=interp)
-        if resized_np.shape[:2] == (target_h, target_w):
-            if logger:
-                logger.warning(f"{log_prefix} Resized mask using cv2.resize ({'INTER_NEAREST' if is_label_mask else 'INTER_LINEAR'}) from {orig_shape} to {resized_np.shape} (unexpected mismatch)") # Changed to WARNING
-            return resized_np
+        return resized_np
     except Exception as e:
         if logger:
-            logger.warning(f"{log_prefix} cv2.resize failed: {e}")
-
-    # Try PIL
-    try:
-        pil_mode = "L" if is_label_mask else "F"
-        pil_img = Image.fromarray(mask_np.astype(np.uint8) if is_label_mask else mask_np)
-        resized_pil = pil_img.resize((target_w, target_h), resample=Image.NEAREST if is_label_mask else Image.BILINEAR)
-        resized_np = np.array(resized_pil)
-        if resized_np.shape[:2] == (target_h, target_w):
-            if logger:
-                logger.warning(f"{log_prefix} Resized mask using PIL.Image.resize from {orig_shape} to {resized_np.shape} (unexpected mismatch)") # Changed to WARNING
-            return resized_np
-    except Exception as e:
-        if logger:
-            logger.warning(f"{log_prefix} PIL.Image.resize failed: {e}")
-
-    # Final check
-    if logger:
-        logger.error(f"{log_prefix} All resizing methods failed. Returning original mask with shape {orig_shape}")
-    return mask_np
+            logger.error(f"{log_prefix} OpenCV resize failed: {e}. Returning original mask.")
+        return mask_np
 
 def run_training_pipeline(
     config: Config, 
@@ -152,7 +85,7 @@ def run_training_pipeline(
     fold_dataset_dict: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Run the complete BARE training pipeline.
+    Run the complete TCD-BARE training pipeline.
 
     Args:
         config: Configuration object
@@ -172,28 +105,41 @@ def run_training_pipeline(
     # Create TensorBoard writer
     writer = SummaryWriter(log_dir=os.path.join(config["output_dir"], "tensorboard"))
 
-    # Log basic information
-    log_or_print(f"Starting training with config: {config.to_dict()}", logger, logging.INFO, is_notebook)
+    # Log basic information — only architecture-relevant params, not the full config dump
+    arch = config.get("architecture", "segformer")
+    _arch_param_keys = {
+        "segformer": ["model_name"],
+        "pspnet": ["backbone"],
+        "setr": ["setr_embed_dim", "setr_patch_size", "setr_input_size"],
+    }
+    _shared_keys = [
+        "architecture", "dataset_name", "num_epochs", "train_batch_size",
+        "learning_rate", "weight_decay", "gradient_accumulation_steps",
+        "mixed_precision", "train_time_upsample",
+        "class_weights_enabled", "scheduler_type", "output_dir", "seed",
+    ]
+    _active_keys = _shared_keys + _arch_param_keys.get(arch, [])
+    _active_config = {k: config.get(k) for k in _active_keys if config.get(k) is not None}
+    log_or_print(f"Starting training with config: {_active_config}", logger, logging.INFO, is_notebook)
 
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log_or_print(f"Using device: {device}", logger, logging.INFO, is_notebook)
 
-    # Log train-time upsampling status (now consistent across all architectures)
-    arch = config.get('architecture')
-    if arch in ['segformer', 'pspnet', 'setr']:
-        upsample_status = "enabled" if config.get('train_time_upsample', False) else "disabled"
-        log_or_print(f"Train-time upsampling for {arch.upper()} is {upsample_status}", logger, logging.INFO, is_notebook)
-        
-        # Log BARE strategy status when both class weights and train-time upsampling are enabled
-        class_weights_enabled = config.get('class_weights_enabled', False)
-        train_upsample_enabled = config.get('train_time_upsample', False)
-        if class_weights_enabled and train_upsample_enabled:
-            log_or_print(f"BARE strategy (class weights + train-time upsampling) is ENABLED for {arch.upper()}", logger, logging.INFO, is_notebook)
-        elif class_weights_enabled:
-            log_or_print(f"Partial BARE strategy: class weights enabled, train-time upsampling disabled for {arch.upper()}", logger, logging.INFO, is_notebook)
-        elif train_upsample_enabled:
-            log_or_print(f"Partial BARE strategy: train-time upsampling enabled, class weights disabled for {arch.upper()}", logger, logging.INFO, is_notebook)
+    # Log train-time upsampling and BARE strategy status for all architectures
+    upsample_status = "enabled" if config.get('train_time_upsample', False) else "disabled"
+    log_or_print(f"Train-time upsampling for {arch.upper()} is {upsample_status}", logger, logging.INFO, is_notebook)
+    
+    class_weights_enabled = config.get('class_weights_enabled', False)
+    train_upsample_enabled = config.get('train_time_upsample', False)
+    if class_weights_enabled and train_upsample_enabled:
+        log_or_print(f"BARE strategy (class weights + train-time upsampling) is ENABLED for {arch.upper()}", logger, logging.INFO, is_notebook)
+    elif class_weights_enabled:
+        log_or_print(f"Partial BARE strategy: class weights enabled, train-time upsampling disabled for {arch.upper()}", logger, logging.INFO, is_notebook)
+    elif train_upsample_enabled:
+        log_or_print(f"Partial BARE strategy: train-time upsampling enabled, class weights disabled for {arch.upper()}", logger, logging.INFO, is_notebook)
+    else:
+        log_or_print(f"Baseline mode: no BARE strategy applied for {arch.upper()}", logger, logging.INFO, is_notebook)
 
     # Load dataset - either use provided fold dataset or load a new one
     if fold_dataset_dict is not None:
@@ -301,10 +247,7 @@ def run_training_pipeline(
         device=device,
         output_dir=config["output_dir"],
         id2label=id2label,
-        visualize_worst=config.get("visualize_worst", True),
-        num_worst_samples=config.get("num_worst_samples", 5),
-        visualize_confidence_comparison=config.get("visualize_confidence_comparison", False),
-        analyze_errors=config.get("analyze_errors", False), # Pass error analysis flag
+        analyze_errors=config.get("analyze_errors", False),
         logger=logger,
         is_notebook=is_notebook
     )
@@ -334,20 +277,20 @@ def run_training_pipeline(
     else:
         # For PSPNet, SETR, and other custom models, save a standardized checkpoint
         # This ensures 'pytorch_model.bin' and 'config.json' are created correctly
+        final_step = len(train_dataloader) * config["num_epochs"] // config["gradient_accumulation_steps"]
         save_checkpoint(
             model=trained_model,
             optimizer=optimizer,
             scheduler=scheduler,
-            global_step=99999,  # Use a high number for final step
+            global_step=final_step,
             epoch=config["num_epochs"],
             output_dir=config["output_dir"],
             is_final=True,  # Mark as final to avoid cleanup
             metrics=metrics,
-            # No need to check for best metric here, just save it
             config=config # Pass the full config to be saved
         )
         # Rename the final checkpoint folder to 'final_model' for consistency
-        final_checkpoint_path = os.path.join(config["output_dir"], "checkpoint-99999")
+        final_checkpoint_path = os.path.join(config["output_dir"], f"checkpoint-{final_step}")
         if os.path.exists(final_checkpoint_path):
             if os.path.exists(final_model_dir):
                 import shutil
@@ -441,6 +384,10 @@ def train_model(
     # Training loop
     global_step = 0
     total_loss = 0.0
+    nan_detected = False  # Flag to track NaN detection for early termination
+    
+    consecutive_nan_count = 0  # Track consecutive NaN batches
+    max_consecutive_nan = 5  # Halt after this many consecutive NaN losses
 
     for epoch in range(num_epochs):
         # Log epoch start
@@ -461,6 +408,22 @@ def train_model(
                 with amp_context():
                     outputs = model(**batch)
                     loss = outputs.loss / gradient_accumulation_steps
+
+                # NaN/Inf detection before backward pass
+                if torch.isnan(loss) or torch.isinf(loss):
+                    consecutive_nan_count += 1
+                    log_or_print(f"WARNING: NaN/Inf loss detected at epoch {epoch+1}, step {step}, global_step {global_step}. "
+                                 f"Consecutive NaN count: {consecutive_nan_count}/{max_consecutive_nan}", 
+                                 logger, logging.WARNING, is_notebook)
+                    optimizer.zero_grad()  # Clear any accumulated gradients
+                    if consecutive_nan_count >= max_consecutive_nan:
+                        log_or_print(f"CRITICAL: {max_consecutive_nan} consecutive NaN losses detected. Halting training.", 
+                                     logger, logging.ERROR, is_notebook)
+                        nan_detected = True
+                        break
+                    continue  # Skip this batch
+                else:
+                    consecutive_nan_count = 0  # Reset counter on valid loss
 
                 # Backward pass with gradient scaling
                 scaler.scale(loss).backward()
@@ -486,7 +449,7 @@ def train_model(
                             writer.add_scalar("train/loss", avg_loss, global_step)
                             writer.add_scalar("train/learning_rate", lr, global_step)
                         total_loss = 0.0 # Reset accumulated loss for logging
-
+                    
                     # Evaluate model (MOVED INSIDE OPTIMIZER STEP)
                     if global_step > 0 and global_step % eval_steps == 0:
                         log_or_print(f"Evaluating model at step {global_step}", logger, logging.INFO, is_notebook)
@@ -533,6 +496,23 @@ def train_model(
             else: # Standard forward pass (no mixed precision)
                 outputs = model(**batch)
                 loss = outputs.loss / gradient_accumulation_steps
+
+                # NaN/Inf detection before backward pass
+                if torch.isnan(loss) or torch.isinf(loss):
+                    consecutive_nan_count += 1
+                    log_or_print(f"WARNING: NaN/Inf loss detected at epoch {epoch+1}, step {step}, global_step {global_step}. "
+                                 f"Consecutive NaN count: {consecutive_nan_count}/{max_consecutive_nan}", 
+                                 logger, logging.WARNING, is_notebook)
+                    optimizer.zero_grad()  # Clear any accumulated gradients
+                    if consecutive_nan_count >= max_consecutive_nan:
+                        log_or_print(f"CRITICAL: {max_consecutive_nan} consecutive NaN losses detected. Halting training.", 
+                                     logger, logging.ERROR, is_notebook)
+                        nan_detected = True
+                        break
+                    continue  # Skip this batch
+                else:
+                    consecutive_nan_count = 0  # Reset counter on valid loss
+
                 loss.backward()
 
                 if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
@@ -608,19 +588,36 @@ def train_model(
             # Save model checkpoint (periodic save)
             # MOVED INSIDE THE OPTIMIZER STEP BLOCK
 
-    # Save final model checkpoint
-    save_checkpoint(
-        model=model,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        global_step=global_step,
-        epoch=num_epochs,
-        output_dir=output_dir,
-        is_final=True,  # Mark as final to potentially skip cleanup logic if needed
-        config=config  # Pass config to the final save
-    )
+        # Check if NaN was detected and break out of epoch loop
+        if nan_detected:
+            log_or_print(f"Training halted at epoch {epoch + 1} due to NaN detection. Saving emergency checkpoint...", 
+                         logger, logging.ERROR, is_notebook)
+            # Save emergency checkpoint before exiting
+            save_checkpoint(
+                model=model, optimizer=optimizer, scheduler=scheduler,
+                global_step=global_step, epoch=epoch, output_dir=output_dir,
+                is_final=True, config=config
+            )
+            log_or_print(f"Emergency checkpoint saved. Best checkpoint from before NaN may be usable.", 
+                         logger, logging.INFO, is_notebook)
+            break  # Exit the epoch loop
 
-    log_or_print("Saved final model checkpoint", logger, logging.INFO, is_notebook)
+    # Save final model checkpoint (only if training completed normally)
+    if not nan_detected:
+        save_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            global_step=global_step,
+            epoch=num_epochs,
+            output_dir=output_dir,
+            is_final=True,  # Mark as final to potentially skip cleanup logic if needed
+            config=config  # Pass config to the final save
+        )
+        log_or_print("Saved final model checkpoint", logger, logging.INFO, is_notebook)
+    else:
+        log_or_print("Training was halted due to NaN detection. Check best_checkpoint for usable weights.", 
+                     logger, logging.WARNING, is_notebook)
 
     return model
 
@@ -631,17 +628,14 @@ def _run_evaluation_loop(
     model: torch.nn.Module,
     eval_dataloader: torch.utils.data.DataLoader,
     device: torch.device,
-    num_worst_samples: int,
-    collect_visualization_data: bool,
     logger: Optional[Any] = None,
     is_notebook: bool = False
-) -> Tuple[float, np.ndarray, np.ndarray, List[Tuple]]:
-    """Runs the evaluation loop, collects predictions, labels, loss, and visualization data."""
+) -> Tuple[float, np.ndarray, np.ndarray]:
+    """Runs the evaluation loop, collects predictions, labels, and loss."""
     model.eval()
     total_loss = 0.0
     all_preds = []
     all_labels = []
-    worst_samples_data = [] # Store tuples: (iou, batch_idx, sample_idx, image_tensor, pred, label, confidence)
 
     with torch.no_grad():
         progress_bar = tqdm(eval_dataloader, desc="Evaluating")
@@ -651,64 +645,28 @@ def _run_evaluation_loop(
             loss = outputs.loss
             total_loss += loss.item()
 
-            logits = outputs.logits # Shape: (B, C, H, W) - H, W might vary
-            labels_tensor = batch["labels"] # Keep as tensor for shape: (B, H_label, W_label)
+            logits = outputs.logits
+            labels_tensor = batch["labels"]
             target_h, target_w = labels_tensor.shape[-2:]
 
-            # Resize logits to match label dimensions before argmax
-            # Use bilinear interpolation as it's common for logits/probabilities
             resized_logits = F.interpolate(
                 logits,
                 size=(target_h, target_w),
                 mode="bilinear",
-                align_corners=False # Generally recommended for semantic segmentation
+                align_corners=False
             )
 
-            preds = torch.argmax(resized_logits, dim=1).detach().cpu().numpy() # Shape: (B, H_label, W_label)
-            labels = labels_tensor.detach().cpu().numpy() # Now convert labels to numpy
+            preds = torch.argmax(resized_logits, dim=1).detach().cpu().numpy()
+            labels = labels_tensor.detach().cpu().numpy()
 
-            all_preds.append(preds) # Appending arrays with consistent H_label, W_label
+            all_preds.append(preds)
             all_labels.append(labels)
-
-            # Store data for visualization if needed
-            if collect_visualization_data:
-                pixel_values = batch["pixel_values"].detach().cpu()
-                probs = torch.softmax(logits, dim=1).detach().cpu()
-                confidence = torch.max(probs, dim=1)[0].numpy()
-
-                for i in range(preds.shape[0]):
-                    sample_pred = preds[i]
-                    sample_label = labels[i]
-                    sample_image = pixel_values[i]
-                    sample_confidence = confidence[i]
-
-                    # Calculate the metric used for ranking (e.g., mean_iou or iou_class_1)
-                    # Using iou_class_1 as default, matching config
-                    sample_metrics = calculate_metrics(
-                        preds=np.expand_dims(sample_pred, 0),
-                        labels=np.expand_dims(sample_label, 0),
-                        metrics_list=['iou_class_1'] # Calculate specific metric
-                    )
-                    # Use .get with a default (e.g., 0.0 or 1.0 depending on metric)
-                    # For IoU, lower is worse, so 0.0 is a safe default if class 1 isn't present
-                    sample_metric_value = sample_metrics.get("iou_class_1", 0.0)
-
-                    sample_data = (sample_metric_value, batch_idx, i, sample_image, sample_pred, sample_label, sample_confidence)
-
-                    # Efficiently track worst samples (lower score is worse for IoU)
-                    if len(worst_samples_data) < num_worst_samples:
-                        worst_samples_data.append(sample_data)
-                        worst_samples_data.sort(key=lambda x: x[0]) # Sort ascending (worst first)
-                    elif sample_metric_value < worst_samples_data[-1][0]: # If current is worse than the "best" of the worst
-                        worst_samples_data.pop() # Remove the "best" of the worst
-                        worst_samples_data.append(sample_data)
-                        worst_samples_data.sort(key=lambda x: x[0]) # Re-sort
 
     avg_loss = total_loss / len(eval_dataloader)
     all_preds_np = np.concatenate(all_preds, axis=0)
     all_labels_np = np.concatenate(all_labels, axis=0)
 
-    return avg_loss, all_preds_np, all_labels_np, worst_samples_data
+    return avg_loss, all_preds_np, all_labels_np
 
 
 def _calculate_and_log_metrics(
@@ -737,71 +695,15 @@ def _calculate_and_log_metrics(
     return metrics
 
 
-def _visualize_evaluation_results(
-    worst_samples_data: List[Tuple],
-    output_dir: str,
-    id2label: Dict[int, str],
-    visualize_worst: bool,
-    visualize_confidence_comparison: bool,
-    logger: Optional[Any] = None,
-    is_notebook: bool = False
-):
-    """Handles visualization of worst predictions and confidence comparisons."""
-    if not worst_samples_data or not output_dir:
-        return
-
-    if visualize_worst:
-        worst_dir = os.path.join(output_dir, "worst_predictions")
-        os.makedirs(worst_dir, exist_ok=True)
-        vis_samples_worst = []
-        # Use the metric value from the tuple (index 0)
-        for i, (metric_val, batch_idx, sample_idx, image_tensor, pred, label, _) in enumerate(worst_samples_data):
-            image_np = tensor_to_image(image_tensor)
-            combined_idx = f"batch{batch_idx}_sample{sample_idx}"
-            # Pass the actual metric value used for ranking
-            vis_samples_worst.append((metric_val, combined_idx, image_np, pred, label))
-
-        try:
-            plot_worst_predictions(
-                worst_samples=vis_samples_worst,
-                save_dir=worst_dir,
-                id2label=id2label,
-                metric_name="iou_class_1" # Match the metric used for ranking
-            )
-            log_or_print(f"Saved worst prediction visualizations to {worst_dir}", logger, logging.INFO, is_notebook)
-        except Exception as e:
-            log_or_print(f"Failed to plot worst predictions: {e}", logger, logging.WARNING, is_notebook)
-
-
-    if visualize_confidence_comparison:
-        conf_comp_dir = os.path.join(output_dir, "confidence_comparison")
-        os.makedirs(conf_comp_dir, exist_ok=True)
-        # Use the metric value from the tuple (index 0)
-        for i, (metric_val, batch_idx, sample_idx, image_tensor, pred, label, confidence) in enumerate(worst_samples_data):
-            image_np = tensor_to_image(image_tensor)
-            title = f"Sample #{batch_idx}_{sample_idx} - IoU Class 1: {metric_val:.4f}" # Use correct metric name
-            save_path = os.path.join(conf_comp_dir, f"conf_comp_{i+1}_sample_{batch_idx}_{sample_idx}.png")
-            try:
-                plot_prediction_comparison_with_confidence(
-                    image=image_np, pred=pred, target=label, confidence_map=confidence,
-                    title=title, save_path=save_path, id2label=id2label
-                )
-                plt.close('all')
-            except Exception as e:
-                 log_or_print(f"Failed to generate confidence comparison plot for sample {batch_idx}_{sample_idx}: {e}", logger, logging.WARNING, is_notebook)
-        log_or_print(f"Saved confidence comparison visualizations to {conf_comp_dir}", logger, logging.INFO, is_notebook)
-
-
 def _perform_error_analysis(
     all_preds: np.ndarray,
     all_labels: np.ndarray,
-    worst_samples_data: List[Tuple],
     output_dir: str,
-    id2label: Dict[int, str], # Needed to determine num_classes
+    id2label: Dict[int, str],
     logger: Optional[Any] = None,
     is_notebook: bool = False
 ) -> Dict[str, float]:
-    """Performs detailed error analysis and visualization."""
+    """Performs detailed error analysis."""
     error_stats = {}
     if not output_dir:
         return error_stats
@@ -811,16 +713,12 @@ def _perform_error_analysis(
     log_or_print("Performing detailed error analysis...", logger, logging.INFO, is_notebook)
 
     try:
-        # Determine num_classes dynamically
         num_classes = len(id2label)
-
-        # Determine whether to use detailed mode for multi-class segmentation
         use_detailed_mode = num_classes > 2
 
         if use_detailed_mode:
             log_or_print(f"Using multi-class error analysis with {num_classes} classes.", logger, logging.INFO, is_notebook)
 
-        # Calculate error map for the entire evaluation dataset
         full_error_map = categorize_errors(
             all_preds,
             all_labels,
@@ -828,40 +726,10 @@ def _perform_error_analysis(
             detailed_mode=use_detailed_mode
         )
 
-        # Calculate overall error statistics
         error_stats = calculate_error_statistics(full_error_map)
         log_or_print("Overall Error Statistics:", logger, logging.INFO, is_notebook)
         for stat_name, stat_value in error_stats.items():
             log_or_print(f"  {stat_name} = {stat_value:.2f}%", logger, logging.INFO, is_notebook)
-
-        # Visualize error maps for the worst samples
-        if worst_samples_data:
-             log_or_print(f"Generating error analysis maps for {len(worst_samples_data)} worst samples...", logger, logging.INFO, is_notebook)
-             # Use the metric value from the tuple (index 0)
-             for i, (metric_val, batch_idx, sample_idx, image_tensor, pred, label, _) in enumerate(worst_samples_data):
-                 image_np = tensor_to_image(image_tensor)
-                 # Recalculate error map for the single sample using the same settings
-                 sample_error_map = categorize_errors(
-                     pred,
-                     label,
-                     num_classes=num_classes,
-                     detailed_mode=use_detailed_mode
-                 )
-                 title = f"Error Analysis - Sample #{batch_idx}_{sample_idx} (IoU Class 1: {metric_val:.4f})" # Use correct metric name
-                 save_path = os.path.join(error_analysis_dir, f"error_map_{i+1}_sample_{batch_idx}_{sample_idx}.png")
-                 try:
-                     plot_error_analysis_map(
-                         image=image_np,
-                         prediction=pred,
-                         ground_truth=label,
-                         class_names=[id2label[i] for i in range(num_classes)] if id2label else None,
-                         title=title,
-                         save_path=save_path
-                     )
-                     plt.close('all')
-                 except Exception as e_plot:
-                     log_or_print(f"Failed to generate error analysis plot for sample {batch_idx}_{sample_idx}: {e_plot}", logger, logging.WARNING, is_notebook)
-             log_or_print(f"Saved error analysis visualizations to {error_analysis_dir}", logger, logging.INFO, is_notebook)
 
     except Exception as e_analyze:
         log_or_print(f"Error during detailed error analysis: {e_analyze}", logger, logging.ERROR, is_notebook)
@@ -911,15 +779,12 @@ def evaluate_model(
     device: torch.device,
     output_dir: Optional[str] = None,
     id2label: Optional[Dict[int, str]] = None,
-    visualize_worst: bool = True,
-    num_worst_samples: int = 5,
-    visualize_confidence_comparison: bool = False,
-    analyze_errors: bool = False, # Add error analysis parameter
+    analyze_errors: bool = False,
     logger: Optional[Any] = None,
     is_notebook: bool = False
 ) -> Dict[str, float]:
     """
-    Evaluate the model and calculate metrics, optionally visualizing/analyzing errors.
+    Evaluate the model and calculate metrics, optionally analyzing errors.
 
     Args:
         model: The model to evaluate
@@ -927,30 +792,21 @@ def evaluate_model(
         device: Device to evaluate on (cuda or cpu)
         output_dir: Directory to save visualizations
         id2label: Mapping from class indices to class names
-        visualize_worst: Whether to visualize worst predictions using plot_worst_predictions.
-        num_worst_samples: Number of worst samples to visualize.
-        visualize_confidence_comparison: Whether to visualize confidence comparisons for the worst samples.
-        analyze_errors: Whether to perform and visualize detailed error analysis.
+        analyze_errors: Whether to perform detailed error analysis.
         logger: Optional logger for logging messages
         is_notebook: Whether running in a notebook environment
 
     Returns:
         Dictionary of evaluation metrics (including error stats if analyze_errors is True)
     """
-    # Ensure model is on the correct device
     model = model.to(device)
-    model.eval() # Ensure model is in evaluation mode
-
-    # Determine if visualization data needs to be collected
-    collect_vis_data = (visualize_worst or visualize_confidence_comparison or analyze_errors) and output_dir is not None
+    model.eval()
 
     # Run evaluation loop
-    avg_loss, all_preds, all_labels, worst_samples_data = _run_evaluation_loop(
+    avg_loss, all_preds, all_labels = _run_evaluation_loop(
         model=model,
         eval_dataloader=eval_dataloader,
         device=device,
-        num_worst_samples=num_worst_samples,
-        collect_visualization_data=collect_vis_data,
         logger=logger,
         is_notebook=is_notebook
     )
@@ -964,30 +820,17 @@ def evaluate_model(
         is_notebook=is_notebook
     )
 
-    # Perform visualizations if requested and data is available
-    if collect_vis_data:
-        _visualize_evaluation_results(
-            worst_samples_data=worst_samples_data,
-            output_dir=output_dir,
-            id2label=id2label,
-            visualize_worst=visualize_worst,
-            visualize_confidence_comparison=visualize_confidence_comparison,
-            logger=logger,
-            is_notebook=is_notebook
-        )
-
     # Perform error analysis if requested
-    if analyze_errors and output_dir:
+    if analyze_errors and output_dir and id2label:
         error_stats = _perform_error_analysis(
             all_preds=all_preds,
             all_labels=all_labels,
-            worst_samples_data=worst_samples_data, # Pass collected data
             output_dir=output_dir,
-            id2label=id2label, # Pass id2label
+            id2label=id2label,
             logger=logger,
             is_notebook=is_notebook
         )
-        metrics.update(error_stats) # Add error stats to final metrics
+        metrics.update(error_stats)
 
     # Plot confusion matrices if possible
     if output_dir and id2label:
@@ -1016,7 +859,7 @@ def run_prediction_pipeline(
     is_notebook: bool = False
 ) -> Dict[str, Any]:
     """
-    Run the complete BARE prediction pipeline.
+    Run the complete TCD-BARE prediction pipeline.
 
     Args:
         config: Configuration object
@@ -1065,7 +908,7 @@ def run_prediction_pipeline(
         # Import the improved model loading function
         from checkpoint import load_model_for_evaluation
         
-        # Load model and image processor - this function handles both TrueResSegformer and standard models
+        # Load model and image processor - handles all supported architectures
         model, _ = load_model_for_evaluation(
             model_path=model_path,
             config=config,  # Pass the current project config

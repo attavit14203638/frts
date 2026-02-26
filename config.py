@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Centralized configuration management for BARE model.
+Centralized configuration management for TCD-BARE model.
 
 This module provides a consistent way to manage configuration across the codebase,
 reducing duplication and enforcing consistent parameter handling.
@@ -20,41 +20,53 @@ logger = get_logger()
 # Default configuration values
 DEFAULT_CONFIG = {
     # Architecture selection
-    # segformer: uses Hugging Face backbone via `model_name`
-    # pspnet: uses `backbone` (e.g., 'resnet50') via segmentation-models-pytorch
-    # setr: uses timm's Vision Transformer (configurable via setr_embed_dim, setr_patch_size)
+    # Options: "segformer", "pspnet", "setr"
+    #
+    # segformer   → uses `model_name` (e.g., "nvidia/mit-b5") via Hugging Face
+    # pspnet      → uses `backbone` (e.g., "resnet50") via segmentation-models-pytorch
+    # setr        → uses `setr_embed_dim`, `setr_patch_size`, `setr_input_size` via timm ViT
     
-    "architecture": "setr",
-    "backbone": "resnet50", # Use with PSPNet
-    # Dataset parameters
-    "dataset_name": "restor/tcd",
-    "image_size": None, 
-    "validation_split": 0.1,  
+    "architecture": "segformer",
 
-    # Model parameters
-    "model_name": "nvidia/mit-b5", #Use with SegFormer 
-    "train_time_upsample": False,  
-    "interpolation_mode": "bilinear", 
-    "interpolation_align_corners": False,
+    # ── Architecture-specific parameters ──────────────────────────────────
+    # Only the params for the selected architecture above are used at runtime.
     
-    # SETR-specific parameters
+    # SegFormer
+    "model_name": "nvidia/mit-b5",
+    
+    # PSPNet
+    "backbone": "resnet50",
+    
+    # SETR
     "setr_embed_dim": 768,
     "setr_patch_size": 16,
-    "setr_input_size": 1024,  # Native input resolution for SETR (enables 1024x1024 processing)
+    "setr_input_size": 1024,
 
-    # Training parameters 
-    "output_dir": "./outputs_setr_baseline",
-    "train_batch_size": 8,
-    "eval_batch_size": 16,
-    "num_epochs": 50,
+    # ── Dataset parameters ────────────────────────────────────────────────
+    "dataset_name": "restor/tcd",
+    "image_size": None,
+    "validation_split": 0.1,
+
+    # ── BARE strategy ─────────────────────────────────────────────────────
+    # These apply across architectures
+    "train_time_upsample": False,
+    "interpolation_mode": "bilinear",
+    "interpolation_align_corners": False,
+    "class_weights_enabled": False,
+
+    # ── Training parameters ───────────────────────────────────────────────
+    "output_dir": "./outputs_segformer_baseline",
+    "train_batch_size": 2,
+    "eval_batch_size": 4,
+    "num_epochs": 1,
     "learning_rate": 1e-5,
     "weight_decay": 0.01,
     "num_workers": 8,
     "seed": 42,
-    "gradient_accumulation_steps": 1,
-    "class_weights_enabled": False,  
+    "gradient_accumulation_steps": 4,  # Effective batch size = 2 * 4 = 8
     "gradient_checkpointing": True,
     "mixed_precision": True,
+    
 
     # Scheduler parameters
     "scheduler_type": "cosine_with_restarts",
@@ -105,14 +117,6 @@ DEFAULT_CONFIG = {
     "train_tile_threshold": 0.0,
     "inference_cpu_offload": False,
     
-    # Cross-validation parameters
-    "cross_validation": {
-        "enabled": False,
-        "num_folds": 5,
-        "save_best_model_per_fold": True,
-        "metrics_to_track": ["f1_score_class_1", "IoU_class_1"]
-    },
-    
     # Logging parameters
     "logging_steps": 25,
     "eval_steps": 250,  
@@ -124,8 +128,8 @@ DEFAULT_CONFIG = {
 
     # Checkpoint resumption parameters
     "resume_from_checkpoint": False, # Master switch for resuming model weights and OPTIONALLY optimizer state
-    # "resume_from_checkpoint_path": None, # Path to model weights (e.g., "./outputs/best_checkpoint/pytorch_model.bin")
-    # "resume_optimizer_path": None, # Path to optimizer state (e.g., "./outputs/best_checkpoint/optimizer.pt"), can be None if not resuming optimizer
+    # "resume_from_checkpoint_path": "/Users/fadil/Desktop/Git_Latex_Container/past_run_repository/full_equip_cosine_restart_50/outputs/best_checkpoint/pytorch_model.bin", # Path to model weights
+    # "resume_optimizer_path": "/Users/fadil/Desktop/Git_Latex_Container/past_run_repository/full_equip_cosine_restart_50/outputs/best_checkpoint/optimizer.pt", # Path to optimizer state, can be None or empty string if not resuming optimizer
     
     # Worst visualization parameters
     "visualize_worst": False,
@@ -141,7 +145,7 @@ DEFAULT_CONFIG = {
 
 class Config:
     """
-    Configuration class for BARE.
+    Configuration class for TCD-BARE.
 
     This class manages configuration parameters with validation,
     saving/loading, and provides a consistent interface for all
@@ -674,12 +678,12 @@ def adjust_config_for_architecture(config: Config) -> Config:
             logger.info(f"SETR architecture selected. Set random_crop_size to {input_size}")
 
     elif arch == "segformer":
-        # Example of a segformer-specific adjustment
-        # config['model_name'] = 'nvidia/segformer-b5-finetuned-ade-640-640'
-        logger.info("SegFormer architecture selected. No specific adjustments needed at this time.")
+        logger.info("SegFormer architecture selected. No specific adjustments needed.")
 
-    # Add other architecture-specific adjustments here
-    # elif arch == "pspnet":
-    #     ...
+    elif arch == "pspnet":
+        logger.info("PSPNet architecture selected. No specific adjustments needed.")
+
+    else:
+        logger.warning(f"Unknown architecture '{arch}'. No adjustments applied.")
 
     return config

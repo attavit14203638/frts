@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Unified Command-Line Interface for BARE.
+Unified Command-Line Interface for TCD-BARE.
 
-This script serves as the main entry point for interacting with the BARE
+This script serves as the main entry point for interacting with the TCD-BARE
 project. It provides subcommands for training, evaluation, prediction, and dataset inspection.
 
 Subcommands:
@@ -110,16 +110,9 @@ def setup_train_parser(subparsers, parent_parser):
     parser.add_argument("--save_steps", type=int,
                         help="Save checkpoint every X steps (overrides config)")
 
-    # Visualization parameters
-    parser.add_argument("--visualize_worst", action=argparse.BooleanOptionalAction, default=True,
-                        help="Visualize worst predictions during eval (overrides config)")
-    parser.add_argument("--num_worst_samples", type=int, default=None,
-                        help="Number of worst samples to show (overrides config)")
     # Add flags for evaluation options during training
     parser.add_argument("--analyze_errors", action=argparse.BooleanOptionalAction, default=None,
                         help="Perform error analysis during evaluation steps (overrides config).")
-    parser.add_argument("--visualize_confidence_comparison", action=argparse.BooleanOptionalAction, default=None,
-                        help="Visualize confidence comparison during evaluation steps (overrides config).")
 
     parser.set_defaults(func=handle_train)
 
@@ -156,18 +149,12 @@ def setup_evaluate_parser(subparsers, parent_parser):
                         help="Dataset name (overrides config).")
     parser.add_argument("--eval_batch_size", type=int, default=None,
                         help="Evaluation batch size (overrides config).")
-    parser.add_argument("--visualize_worst", action=argparse.BooleanOptionalAction, default=None, # Default None to use config
-                        help="Visualize worst predictions (overrides config).")
-    parser.add_argument("--num_worst_samples", type=int, default=None,
-                        help="Number of worst samples to show (overrides config).")
     parser.add_argument("--num_workers", type=int, default=None,
                         help="Dataloader workers (overrides config).")
     parser.add_argument("--validation_split", type=float, default=None,
                         help="Validation split fraction if needed (overrides config).")
     parser.add_argument("--analyze_errors", action=argparse.BooleanOptionalAction, default=None,
                         help="Perform error analysis during evaluation (overrides config).")
-    parser.add_argument("--visualize_confidence_comparison", action=argparse.BooleanOptionalAction, default=None,
-                        help="Visualize confidence comparison during evaluation (overrides config).")
 
     parser.set_defaults(func=handle_evaluate)
 
@@ -431,12 +418,9 @@ def handle_evaluate(args: argparse.Namespace, logger: logging.Logger, config: Co
     # These checks ensure CLI args take precedence if they are not None
     if args.dataset_name: config["dataset_name"] = args.dataset_name
     if args.eval_batch_size: config["eval_batch_size"] = args.eval_batch_size
-    if args.visualize_worst is not None: config["visualize_worst"] = args.visualize_worst
-    if args.num_worst_samples is not None: config["num_worst_samples"] = args.num_worst_samples
     if args.num_workers is not None: config["num_workers"] = args.num_workers
     if args.validation_split is not None: config["validation_split"] = args.validation_split
     if args.analyze_errors is not None: config["analyze_errors"] = args.analyze_errors
-    if args.visualize_confidence_comparison is not None: config["visualize_confidence_comparison"] = args.visualize_confidence_comparison
     # Note: image_size is not directly used by evaluate_model or create_eval_dataloader
 
     # Output directory is already determined and created in main
@@ -479,10 +463,7 @@ def handle_evaluate(args: argparse.Namespace, logger: logging.Logger, config: Co
         device=device,
         output_dir=eval_output_dir,
         id2label=id2label,
-        visualize_worst=config.get("visualize_worst", True),
-        num_worst_samples=config.get("num_worst_samples", 5),
         analyze_errors=config.get("analyze_errors", False),
-        visualize_confidence_comparison=config.get("visualize_confidence_comparison", False),
         logger=logger,
         is_notebook=False
     )
@@ -527,7 +508,7 @@ from inspect_dataset import verify_training_tiling # Import the function - Alrea
 def main():
     """Main entry point for the script."""
     parent_parser = create_parent_parser()
-    parser = argparse.ArgumentParser(description="BARE: Train, Evaluate, Predict, Inspect, Verify Tiling")
+    parser = argparse.ArgumentParser(description="TCD-BARE: Train, Evaluate, Predict, Inspect, Verify Tiling")
     subparsers = parser.add_subparsers(title="Available Commands", dest="command", required=True)
 
     # Setup parsers for each command, passing the parent
