@@ -3,11 +3,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
-[![Paper](https://img.shields.io/badge/Paper-AusDM'25-green.svg)](https://github.com/attavit14203638/bare)
+[![Paper](https://img.shields.io/badge/Paper-AusDM'25-green.svg)](https://doi.org/10.1007/978-981-95-6786-7_20)
 [![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **Official PyTorch implementation of "BARE: Boundary-Aware with Resolution Enhancement for Tree Crown Delineation"**  
-*Accepted at The 23rd Australasian Data Science and Machine Learning Conference (AusDM'25)*
+*Published in The 23rd Australasian Data Science and Machine Learning Conference (AusDM'25)*  
+📄 **[Read the Paper](https://doi.org/10.1007/978-981-95-6786-7_20)**
 
 > **Authors:** Attavit Wilaiwongsakul, Bin Liang, Wenfeng Jia, Bryan Zheng, Fang Chen  
 > **Affiliation:** University of Technology Sydney, Charles Sturt University
@@ -342,8 +343,11 @@ If you find this work useful for your research, please cite our paper:
 @inproceedings{wilaiwongsakul2025bare,
   title={BARE: Boundary-Aware with Resolution Enhancement for Tree Crown Delineation},
   author={Wilaiwongsakul, Attavit and Liang, Bin and Jia, Wenfeng and Zheng, Bryan and Chen, Fang},
-  booktitle={The 23rd Australasian Data Science and Machine Learning Conference (AusDM'25)},
-  year={2025}
+  booktitle={Australasian Data Science and Machine Learning Conference},
+  pages={279--293},
+  year={2025},
+  publisher={Springer Nature Singapore},
+  doi={10.1007/978-981-95-6786-7_20}
 }
 ```
 

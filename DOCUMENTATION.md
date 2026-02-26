@@ -388,4 +388,4 @@ Our experimental evaluation shows that the BARE strategy consistently improves p
 - **Balanced Efficiency**: Achieves these improvements with minimal computational overhead
 - **Architecture-Agnostic Benefits**: Consistent gains when applied to SegFormer, PSPNet, and SETR
 
-Full benchmark results are available in our AusDM'25 paper.
+Full benchmark results are available in our [AusDM'25 paper](https://doi.org/10.1007/978-981-95-6786-7_20).
