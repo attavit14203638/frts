@@ -1,391 +1,156 @@
-# BARE: Technical Documentation
+# Technical Documentation
 
-This comprehensive documentation covers the architecture, implementation details, and development history of BARE (Boundary-Aware with Resolution Enhancement) for enhanced boundary delineation in tree crown segmentation tasks.
+This document provides implementation-level notes that complement the [README](README.md). For a high-level overview, usage, and citation info, see the README. For a log of changes across papers, see the [CHANGELOG](CHANGELOG.md).
 
 ## Table of Contents
 
-1. [Architecture Overview](#1-architecture-overview)
-   - [1.1 BARE Strategy Architecture](#11-bare-strategy-architecture)
-   - [1.2 Tree Crown Delineation Dataset](#12-tree-crown-delineation-dataset)
-2. [Implementation Details](#2-implementation-details)
-   - [2.1 Data Processing](#21-data-processing)
-   - [2.2 Model Architecture](#22-model-architecture)
-   - [2.3 Training Pipeline](#23-training-pipeline)
-   - [2.4 Optimization Techniques](#24-optimization-techniques)
-   - [2.5 Evaluation Metrics](#25-evaluation-metrics)
-3. [Code Structure](#3-code-structure)
-   - [3.1 Core Modules](#31-core-modules)
-   - [3.2 Configuration Management](#32-configuration-management)
-   - [3.3 Error Handling](#33-error-handling)
-   - [3.4 Visualization](#34-visualization)
-4. [Development History](#4-development-history)
-   - [4.1 Refactoring Summary](#41-refactoring-summary)
-   - [4.2 Streamlining Efforts](#42-streamlining-efforts)
-   - [4.3 Research Background](#43-research-background)
-5. [Usage Patterns](#5-usage-patterns)
-   - [5.1 CLI Interface](#51-cli-interface)
-   - [5.2 Python API](#52-python-api)
-   - [5.3 Jupyter Notebook](#53-jupyter-notebook)
-6. [Research Applications](#6-research-applications)
-   - [6.1 Tree Crown Delineation](#61-tree-crown-delineation)
-   - [6.2 Performance Benchmarks](#62-performance-benchmarks)
-
-## 1. Architecture Overview
-
-### 1.1 BARE Strategy Architecture
-
-Our BARE (Boundary-Aware with Resolution Enhancement) strategy enhances multiple segmentation architectures for tree crown delineation tasks. The key innovations include:
-
-1. **Full Resolution Supervision**:
-   - All supported architectures produce segmentation maps at the full resolution of input images
-   - External upsampling of decoder logits before loss calculation and prediction
-   - Significantly improves boundary delineation accuracy without architectural modifications
-   - Maintains inference efficiency while improving training supervision
-
-2. **Multi-Architecture Support**:
-   - **SegFormer**: Hierarchical Transformer encoder with lightweight MLP decoder
-   - **PSPNet**: Pyramid Scene Parsing Network with ResNet backbone
-   - **SETR**: Pure Vision Transformer with custom segmentation decoder
-
-3. **Enhanced SETR Implementation**:
-   - **Native High-Resolution Processing**: Supports 1024×1024 inputs without downsampling bottlenecks
-   - **Flexible ViT Backbone**: Uses timm's Vision Transformer with configurable input dimensions
-   - **Position Embedding Interpolation**: Automatically adapts pre-trained 224×224 weights to larger inputs
-   - **Memory Efficient**: Maintains computational efficiency through gradient checkpointing
-
-4. **Architecture-Agnostic Benefits**:
-   - **Boundary Enhancement**: External full-resolution loss supervision improves boundary accuracy
-   - **Resolution Consistency**: All models produce outputs at original input resolution
-   - **Fair Comparison**: Identical resolution enhancement applied across different architectures
-   - **Computational Efficiency**: Minimal overhead while maintaining model-specific advantages
-
-### 1.2 Tree Crown Delineation Dataset
-
-The Tree Crown Delineation (TCD) dataset contains satellite imagery with pixel-level annotations for tree crown segmentation:
-
-- **Images**: High-resolution satellite/aerial imagery of forest areas
-- **Annotations**: Pixel-level segmentation masks (under 'annotation' field)
-- **Classes**: Binary (tree crown vs. background)
-- **Structure**: Training, validation, and test splits
-
-## 2. Implementation Details
-
-### 2.1 Data Processing
-
-The data processing pipeline includes:
-
-1. **Dataset Loading and Consistent Shuffling**:
-   - Centralized `load_and_shuffle_dataset` function
-   - Fixed seed for deterministic shuffling
-   - Pre-shuffled dataset passed to all pipeline components
-
-2. **Image Preprocessing**:
-   - Resizing to fixed dimensions (default: 512×512)
-   - Normalization for standardized pixel values
-   - Automatic conversion from grayscale to RGB
-
-3. **Segmentation Mask Processing**:
-   - Support for 'annotation' field (TCD-specific)
-   - Binary format conversion (0: background, 1: tree_crown)
-   - Handling of multi-channel annotations
-   - Invalid sample detection and skipping
-
-4. **DataLoader Creation**:
-   - Efficient batch processing with PyTorch DataLoaders
-   - Automatic creation of validation split if needed
-   - Consistent error handling
-
-### 2.2 Model Architecture
-
-The BARE strategy enhances multiple architectures (SegFormer, PSPNet, SETR) with the following key modifications:
-
-1. **Resolution Handling**:
-   - Modified the decoder to produce logits at the full input resolution
-   - Implemented efficient upsampling strategies to minimize computational overhead
-   - Added configuration options to control the output resolution behavior
-
-2. **Loss Calculation**:
-   - Adapted loss functions to work with full-resolution logits
-   - Implemented weighted loss strategies to address class imbalance in tree crown segmentation
-   - Added support for boundary-aware loss components to enhance edge preservation
-
-3. **Model Configuration**:
-   - Extended the model configuration system to accommodate BARE-specific parameters
-   - Created a unified interface supporting multiple architectures (SegFormer, PSPNet, SETR)
-   - Maintained backward compatibility with pretrained models
-
-Implementation is in `model.py` with architecture-specific classes enhanced with the BARE strategy.
-
-### 2.3 Training Pipeline
-
-The training pipeline is centralized and includes:
-
-1. **Unified Flow**:
-   - Consistent dataset handling throughout
-   - Integrated checkpointing and evaluation
-   - Standardized configuration
-
-2. **Training Loop**:
-   - Forward and backward passes with gradient accumulation
-   - Mixed precision support
-   - Periodic evaluation and checkpoint saving
-   - TensorBoard integration for metrics
-
-3. **Validation**:
-   - Regular model evaluation
-   - Worst-case sample visualization
-   - Comprehensive metrics reporting
-
-### 2.4 Optimization Techniques
-
-Several optimization techniques improve training and performance:
-
-1. **Mixed Precision Training**:
-   - Combined 16-bit and 32-bit precision
-   - Device-specific implementation (CPU vs. CUDA)
-   - Memory usage reduction and faster training
-
-2. **Gradient Accumulation**:
-   - Accumulation over multiple batches
-   - Support for effective larger batch sizes
-   - Training stability improvements
-
-3. **Learning Rate Scheduling**:
-   - Linear scheduling with warmup
-   - Cosine decay options
-   - Checkpoint-based resumption
-
-4. **Class Weight Handling**:
-   - Inverse frequency-based weight computation
-   - Integration with loss function
-   - Support for different weighting strategies
-
-5. **Gradient Checkpointing**:
-   - Enabled via the `"gradient_checkpointing": true` setting in the configuration.
-   - Reduces memory usage significantly during training by trading computation for memory. Instead of storing intermediate activations for the entire model to compute gradients, it recomputes them during the backward pass.
-   - **Trade-off**: Increases training time due to the recomputation overhead. Ideal for training large models on GPUs with limited memory.
-   - Implemented by calling `model.gradient_checkpointing_enable()` if available on the Hugging Face model.
-
-6. **DataLoader Performance**:
-   - Configurable options in `config.py` to optimize data loading speed:
-     - `"dataloader_pin_memory": true`: If using CUDA, pins memory for faster CPU-to-GPU transfers. Can increase CPU memory usage slightly.
-     - `"dataloader_persistent_workers": true`: Keeps worker processes alive between epochs, reducing overhead for dataset initialization and startup time, especially for complex datasets or augmentations. Requires `num_workers > 0`.
-     - `"dataloader_prefetch_factor": N`: Number of batches loaded in advance by each worker (default: 2). Higher values can improve GPU utilization by reducing I/O wait times but increase memory usage. Requires `num_workers > 0`.
-   - These settings are passed to the PyTorch `DataLoader` in `dataset.py`.
-
-### 2.5 Evaluation Metrics
-
-Comprehensive evaluation metrics include:
-
-1. **Primary Metrics**:
-   - Mean IoU (Intersection over Union)
-   - Dice coefficient
-   - Pixel accuracy
-
-2. **Additional Metrics**:
-   - Precision and recall
-   - F1 score
-   - Per-class evaluation
-
-3. **Visualization Metrics**:
-   - Worst prediction identification
-   - Comparative visualization
-   - Confusion matrix and distribution
-
-## 3. Code Structure
-
-### 3.1 Core Modules
-
-The codebase is organized into modular components:
-
-| Module | Description |
-|--------|-------------|
-| `pipeline.py` | Centralized training and evaluation pipeline |
-| `dataset.py` | Dataset loading and processing with error handling |
-| `model.py` | SegFormer model with true-resolution output |
-| `main.py` | CLI entry point |
-
-### 3.2 Configuration Management
-
-Configuration is managed through:
-
-1. **Config Class** (`config.py`):
-   - Comprehensive configuration with validation
-   - Parameter grouping (dataset, model, training, etc.)
-   - Loading/saving from/to JSON files
-   - Default values and type hints
-
-2. **Integration**:
-   - CLI argument parsing in `main.py`
-   - Configuration conversion from arguments
-   - Notebook parameter cell for interactive configuration
-
-### 3.3 Error Handling
-
-Robust error handling is implemented through:
-
-1. **Custom Exception Hierarchy** (`exceptions.py`):
-   - `TCDSegformerError` base class
-   - Specialized exceptions for different error types
-   - Contextual error information
-
-2. **Error Recovery**:
-   - Fallback mechanisms for invalid samples
-   - Graceful error handling in critical sections
-   - Logging with detailed context
-
-3. **Validation**:
-   - Configuration parameter validation
-   - Dataset sample validation
-   - Input/output validation for model operations
-
-### 3.4 Visualization
-
-Comprehensive visualization tools include:
-
-1. **Dataset Inspection**:
-   - Raw annotation visualization
-   - Processed sample inspection
-   - Class distribution visualization
-
-2. **Training Monitoring**:
-   - Metric plotting with smoothing
-   - Learning rate visualization
-   - Loss breakdown by component
-
-3. **Prediction Visualization**:
-   - Comparison between prediction and ground truth
-   - Worst sample identification
-   - Confidence visualization
-
-## 4. Development History
-
-### 4.1 Refactoring Summary
-
-The codebase underwent comprehensive refactoring to improve:
-
-1. **Centralized Configuration**:
-   - Creation of `Config` class
-   - Removal of hardcoded values
-   - Standardized parameter handling
-
-2. **Modular Design**:
-   - Clear separation of responsibilities
-   - Reduction of interdependencies
-   - Enhanced maintainability
-
-3. **Error Handling**:
-   - Custom exception hierarchy
-   - Consistent recovery mechanisms
-   - Specialized error types
-
-4. **Code Organization**:
-   - Consolidation of related functionality
-   - Standardized interfaces
-   - Improved documentation
-
-### 4.2 Streamlining Efforts
-
-Subsequent streamlining efforts focused on:
-
-1. **Centralized Pipeline**:
-   - Creation of unified pipeline module
-   - Consistent workflow for training operations
-   - Standardized parameter handling
-
-2. **Removal of Legacy Components**:
-   - Elimination of bridge modules
-   - Removal of compatibility layers
-   - Direct use of refactored modules
-
-3. **Standardization**:
-   - Consistent use of Config class
-   - Unified approach to dataset handling
-   - Standardized checkpoint management
-
-4. **Modern Notebook Integration**:
-   - Creation of refactored notebook
-   - Streamlined dataset inspection and training
-   - Reduced code duplication
-
-### 4.3 Research Background
-
-The BARE strategy and associated pipeline were developed as part of research addressing challenges in high-resolution semantic segmentation for remote sensing applications. The key motivations were:
-
-1. **Boundary Preservation Challenge**: Conventional semantic segmentation models often struggle with preserving fine-grained details at object boundaries, particularly in complex natural scenes like forests.
-
-2. **Resolution Trade-offs**: Most segmentation architectures reduce spatial resolution internally to manage computational complexity, which can lead to detail loss at object boundaries.
-
-3. **Domain-Specific Requirements**: Tree crown delineation in remote sensing imagery presents unique challenges including varying tree sizes, dense canopy overlap, and complex textures that require specialized approaches.
-
-Our BARE strategy was designed to address these challenges while maintaining computational efficiency, providing consistent improvements across multiple architectures (SegFormer, PSPNet, SETR) for tasks requiring high boundary accuracy.
-
-## 5. Usage Patterns
-
-### 5.1 CLI Interface
-
-The command-line interface provides a simple entry point:
-
-```bash
-python main.py --dataset_name restor/tcd --model_name nvidia/segformer-b0-finetuned-ade-512-512 --output_dir ./outputs
-```
-
-Additional parameters can customize:
-- Training parameters (epochs, batch size, learning rate)
-- Model configuration (architecture, weights)
-- Optimization settings (mixed precision, gradient accumulation)
-
-### 5.2 Python API
-
-The Python API allows programmatic use:
+1. [Core Module Layout](#1-core-module-layout)
+2. [Full-Resolution Supervision Mechanics](#2-full-resolution-supervision-mechanics)
+3. [Data Processing](#3-data-processing)
+4. [Training Pipeline](#4-training-pipeline)
+5. [Optimization Notes](#5-optimization-notes)
+6. [Evaluation Metrics](#6-evaluation-metrics)
+7. [Configuration Management](#7-configuration-management)
+8. [Error Handling](#8-error-handling)
+9. [Extending with New Architectures or Datasets](#9-extending-with-new-architectures-or-datasets)
+
+---
+
+## 1. Core Module Layout
+
+| Module | Purpose |
+|---|---|
+| `Core/pipeline.py` | Centralised train / evaluate / predict entry points |
+| `Core/config.py` | `Config` dataclass with validation, JSON (de)serialisation |
+| `Core/dataset.py` | HuggingFace dataset loading, augmentation, DataLoader wiring |
+| `Core/model.py` | Conference-era architecture wrappers (SegFormer, PSPNet, SETR) |
+| `Core/metrics.py` | IoU, F1, precision, recall, pixel accuracy, Boundary IoU |
+| `Core/checkpoint.py` | Checkpoint save/restore with config metadata |
+| `Core/image_utils.py` | Tiling, stitching, image I/O helpers |
+| `Core/exceptions.py` | Custom exception hierarchy |
+| `Core/utils.py` | Logger setup and small shared utilities |
+| `Core/main.py` | CLI entry point (subcommands: `train`, `predict`, `evaluate`) |
+| `Extended/new_architectures.py` | Journal-era architectures: DeepLabV3, UperNet+Swin, OneFormer |
+| `Extended/datasets_loader.py` | External eval datasets: SelvaMask, BAMFORESTS, SavannaTreeAI, Quebec |
+| `Extended/statistical_validation.py` | Friedman test and bootstrap 95% confidence intervals |
+| `Extended/loss_functions.py` | Loss implementations (cross-entropy default) |
+| `Extended/tensorboard_utils.py` | TensorBoard log parsing and plotting |
+| `Extended/visualization.py` | Figures used in the manuscript |
+| `Extended/inspect_dataset.py` | Standalone dataset sanity-check utility |
+
+`Extended/` modules import from `Core/` via `sys.path.insert` at the top of each file. Run scripts from the repository root or set `PYTHONPATH=Core:Extended` for reliable resolution.
+
+---
+
+## 2. Full-Resolution Supervision Mechanics
+
+The central modification is captured in a single function: before computing loss, the model's reduced-resolution logits are bilinearly upsampled to match ground-truth dimensions. Given logits $L \in \mathbb{R}^{C \times H/R \times W/R}$ and label $Y \in \{0, \ldots, C-1\}^{H \times W}$:
 
 ```python
-from config import Config
-from pipeline import run_training_pipeline
-
-# Create configuration
-config = Config({
-    "dataset_name": "restor/tcd",
-    "model_name": "nvidia/segformer-b0-finetuned-ade-512-512",
-    "output_dir": "./outputs",
-    "num_epochs": 10
-})
-
-# Run training pipeline
-results = run_training_pipeline(config=config)
+if config.train_time_upsample:
+    logits_full = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
+    loss = F.cross_entropy(logits_full, Y)
+else:
+    Y_reduced = F.interpolate(Y.unsqueeze(1).float(), size=logits.shape[-2:],
+                              mode="nearest").squeeze(1).long()
+    loss = F.cross_entropy(logits, Y_reduced)
 ```
 
-This enables integration with larger ML pipelines or custom workflows.
+**Design invariants:**
 
-### 5.3 Jupyter Notebook
+- Upsampling is applied during training only; the inference path is unchanged.
+- No new learnable parameters are introduced.
+- Supported on any encoder-decoder model whose decoder outputs logits at a reduced spatial resolution.
+- The flag `train_time_upsample` (in `config.py`) controls which branch runs.
 
-The `bare_pipeline.ipynb` notebook provides an interactive interface for:
+---
 
-- Dataset exploration and visualization
-- Model training with real-time monitoring
-- Result inspection and analysis
-- Hyperparameter experimentation
+## 3. Data Processing
 
-The notebook imports functions from Python modules to create a complete pipeline with interactive components.
+The primary dataset is `restor/tcd` (OAM-TCD) via HuggingFace Datasets.
 
-## 6. Research Applications
+1. **Loading and shuffling.** `load_and_shuffle_dataset` seeds a deterministic shuffle so that all pipeline components see the same order.
+2. **Preprocessing.** Images are normalised to ImageNet statistics and resized (default crop 1024×1024). Grayscale inputs are auto-converted to RGB.
+3. **Mask handling.** Annotations under the `annotation` field are converted to binary masks (0 = background, 1 = tree crown). Multi-channel annotations are reduced deterministically. Invalid samples are logged and skipped.
+4. **DataLoader.** Standard PyTorch `DataLoader` with `pin_memory`, `persistent_workers`, and `prefetch_factor` configurable via `Config`.
 
-### 6.1 Tree Crown Delineation
+External evaluation datasets (SelvaMask, BAMFORESTS, SavannaTreeAI, Quebec) are loaded via dataset-specific classes in `Extended/datasets_loader.py`. All loaders return `{'image': PIL.Image, 'mask': PIL.Image}` dictionaries for a uniform downstream interface.
 
-The primary application of this codebase is for accurate delineation of individual tree crowns in remote sensing imagery, which serves several important ecological and environmental monitoring purposes:
+---
 
-- **Forest Inventory**: Calculating tree density, crown size distributions, and forest structure metrics
-- **Biodiversity Assessment**: Analyzing tree species diversity based on crown characteristics
-- **Carbon Stock Estimation**: Improved estimates of above-ground biomass through accurate crown measurements
-- **Ecosystem Monitoring**: Tracking changes in forest structure and composition over time
+## 4. Training Pipeline
 
-### 6.2 Performance Benchmarks
+Centralised in `Core/pipeline.run_training_pipeline`. Responsibilities:
 
-Our experimental evaluation shows that the BARE strategy consistently improves performance across multiple architectures in tree crown delineation tasks:
+- Build model, dataset, optimizer, scheduler from a single `Config`.
+- Run forward/backward with gradient accumulation and AMP autocast.
+- Periodic validation and checkpoint saving (best-on-B-IoU by default).
+- TensorBoard logging under `outputs/<run>/tensorboard/`.
 
-- **Improved Boundary IoU**: Significant improvements in boundary-aware metrics across all supported architectures
-- **Enhanced Detail Preservation**: Superior performance in identifying small trees and delineating complex crown boundaries
-- **Balanced Efficiency**: Achieves these improvements with minimal computational overhead
-- **Architecture-Agnostic Benefits**: Consistent gains when applied to SegFormer, PSPNet, and SETR
+The multi-seed protocol used in the journal paper is implemented as three independent invocations with seeds `{42, 123, 2024}`. Each seed controls weight initialisation, data shuffling, and stochastic regularisation.
 
-Full benchmark results are available in our [AusDM'25 paper](https://doi.org/10.1007/978-981-95-6786-7_20).
+---
+
+## 5. Optimization Notes
+
+- **Mixed precision** (FP16 autocast + GradScaler). Enabled via `config.mixed_precision = True`. Reduces memory substantially on V100-class GPUs; required for UperNet+Swin and OneFormer at 1024×1024 crops.
+- **Gradient accumulation** supports effective batch sizes larger than GPU memory allows. Journal paper uses `per_device_batch_size = 2` with `accumulation_steps = 4` (effective batch = 8).
+- **Learning-rate scheduling**: cosine annealing with warm restarts, 10% warmup ratio over 50 epochs (journal default). Linear warmup + linear decay is retained as an alternative.
+- **Gradient checkpointing** (`config.gradient_checkpointing = True`) trades compute for memory. Relevant for large-backbone architectures (OneFormer Swin-L).
+- **DataLoader perf knobs**: `dataloader_pin_memory`, `dataloader_persistent_workers`, `dataloader_prefetch_factor` all exposed in `Config`.
+
+---
+
+## 6. Evaluation Metrics
+
+Computed in `Core/metrics.py`:
+
+- **IoU** (Intersection over Union), per-class and mean.
+- **F1 / Dice coefficient.**
+- **Precision and recall** (for the foreground class).
+- **Pixel accuracy.**
+- **Boundary IoU (B-IoU)** — primary metric for the journal paper. Dilation radius defaults to `d = 0.02 * sqrt(H^2 + W^2)` following Cheng et al. (2021). B-IoU is computed as the IoU of the two contour bands $(G_d \cap G)$ and $(P_d \cap P)$.
+
+Statistical validation (`Extended/statistical_validation.py`) adds:
+
+- **Friedman test** (`scipy.stats.friedmanchisquare`) for cross-architecture comparison over seeds.
+- **Bootstrap 95% confidence intervals** using the percentile method (default $B = 10\,000$ resamples).
+
+---
+
+## 7. Configuration Management
+
+`Core/config.py` exposes the `Config` dataclass. Conventions:
+
+- Every CLI flag corresponds to a `Config` field.
+- `Config.save(path)` and `Config.load(path)` round-trip via JSON so that each run directory contains `effective_train_config.json` for reproducibility.
+- Invalid combinations (e.g. `mixed_precision=True` on CPU) raise `ConfigurationError` at construction time.
+
+---
+
+## 8. Error Handling
+
+Custom exceptions in `Core/exceptions.py` form a hierarchy rooted at `TCDError`. Subclasses include `DatasetError`, `InvalidSampleError`, `EmptyMaskError`, `ShapeMismatchError`, `ClassImbalanceError`, and `ConfigurationError`. Invalid samples are skipped rather than aborting training; shape/dtype mismatches at model I/O boundaries raise immediately with contextual information.
+
+---
+
+## 9. Extending with New Architectures or Datasets
+
+### Add a new architecture
+
+1. Create a wrapper class in `Extended/new_architectures.py` (or a new module) exposing:
+   - `forward(image) -> logits` with logits at a known reduction factor $R$.
+   - Any architecture-specific init arguments.
+2. Register the wrapper in the factory function in `Core/model.py`.
+3. Ensure the wrapper respects `config.train_time_upsample` by either (a) returning raw reduced-resolution logits and letting `pipeline.py` upsample, or (b) short-circuiting to full-resolution when the flag is set. Approach (a) is preferred for uniformity.
+
+### Add a new external dataset
+
+1. Create a new loader class in `Extended/datasets_loader.py` subclassing the base abstract class.
+2. Implement the `__iter__` (or `__getitem__` + `__len__`) protocol returning `{'image': PIL.Image, 'mask': PIL.Image}`.
+3. Normalise label polarity (tree = 1, background = 0).
+4. Register the dataset in the loader factory so it can be referenced by name from the CLI.
+
+---
+
+For paper-facing claims, empirical results, and citations, see the journal manuscript (see the [README](README.md) for citation details).

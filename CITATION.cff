@@ -1,0 +1,63 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite both the journal paper (primary) and the conference paper."
+title: "Full-Resolution Training Supervision for Tree Crown Delineation"
+abstract: "Reference implementation of full-resolution training supervision (FRTS) for semantic segmentation, validated across five architectures for tree crown delineation in aerial imagery."
+authors:
+  - family-names: "Wilaiwongsakul"
+    given-names: "Attavit"
+    affiliation: "School of Computer Science, University of Technology Sydney"
+  - family-names: "Liang"
+    given-names: "Bin"
+    affiliation: "School of Computer Science, University of Technology Sydney"
+  - family-names: "Zheng"
+    given-names: "Bryan"
+    affiliation: "School of Computer Science, University of Technology Sydney"
+  - family-names: "Chen"
+    given-names: "Fang"
+    affiliation: "School of Computer Science, University of Technology Sydney"
+repository-code: "https://github.com/attavit14203638/frts"
+license: MIT
+keywords:
+  - tree crown delineation
+  - semantic segmentation
+  - boundary IoU
+  - vision transformers
+  - full-resolution supervision
+preferred-citation:
+  type: article
+  title: "Full-Resolution Training Supervision: Architecture-Agnostic Boundary Enhancement for Tree Crown Delineation"
+  authors:
+    - family-names: "Wilaiwongsakul"
+      given-names: "Attavit"
+    - family-names: "Liang"
+      given-names: "Bin"
+    - family-names: "Zheng"
+      given-names: "Bryan"
+    - family-names: "Chen"
+      given-names: "Fang"
+  journal: "Journal of Big Data"
+  year: 2026
+references:
+  - type: conference-paper
+    title: "BARE: Boundary-Aware with Resolution Enhancement for Tree Crown Delineation"
+    authors:
+      - family-names: "Wilaiwongsakul"
+        given-names: "Attavit"
+      - family-names: "Liang"
+        given-names: "Bin"
+      - family-names: "Jia"
+        given-names: "Wenfeng"
+      - family-names: "Zheng"
+        given-names: "Bryan"
+      - family-names: "Chen"
+        given-names: "Fang"
+    collection-title: "Data Science and Machine Learning. AusDM 2025"
+    collection-type: "proceedings"
+    volume: 2765
+    series: "Communications in Computer and Information Science"
+    start: 302
+    end: 315
+    year: 2026
+    publisher:
+      name: "Springer, Singapore"
+    doi: "10.1007/978-981-95-6786-7_20"

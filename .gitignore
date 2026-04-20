@@ -1,63 +1,80 @@
+# ============================================================================
+# macOS
+# ============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ============================================================================
 # Python
+# ============================================================================
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 
 # Virtual environments
 venv/
-ENV/
 env/
-.venv
+ENV/
+.venv/
+.env/
+*/venv/
+**/venv/
 
-# IDEs
+# Build / distribution
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# ============================================================================
+# Jupyter
+# ============================================================================
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# ============================================================================
+# IDE
+# ============================================================================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-
-# Model outputs
+# ============================================================================
+# Project-specific
+# ============================================================================
+# Training outputs (checkpoints, logs, metrics)
 outputs/
-outputs_*/
-checkpoints/
-logs/
+training_output/
+eval/
 runs/
-wandb/
+logs/
+tensorboard_logs/
+*.ckpt
 *.pth
-*.bin
+*.pt
+*.safetensors
 
-# Data
+# Local config overrides
+effective_train_config.json
+
+# HuggingFace cache
+.cache/
+huggingface/
+
+# Datasets (should be fetched separately, not committed)
 data/
-dataset/
-*.zip
-*.tar.gz
+datasets/
+*.parquet
+*.arrow
 
-# Temporary files
-*.log
-*.tmp
-*.temp
+# ============================================================================
+# Environment variables
+# ============================================================================
+.env
+.env.local

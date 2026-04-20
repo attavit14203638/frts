@@ -1,360 +1,146 @@
-# BARE: Boundary-Aware with Resolution Enhancement for Tree Crown Delineation
+# Full-Resolution Training Supervision for Tree Crown Delineation
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
-[![Paper](https://img.shields.io/badge/Paper-AusDM'25-green.svg)](https://doi.org/10.1007/978-981-95-6786-7_20)
-[![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+This repository hosts the reference implementation for two related papers on boundary-accurate tree crown delineation (TCD) in aerial imagery:
 
-**Official PyTorch implementation of "BARE: Boundary-Aware with Resolution Enhancement for Tree Crown Delineation"**  
-*Published in The 23rd Australasian Data Science and Machine Learning Conference (AusDM'25)*  
-📄 **[Read the Paper](https://doi.org/10.1007/978-981-95-6786-7_20)**
+1. **BARE** (AusDM 2025, conference): "Boundary-Aware with Resolution Enhancement for Tree Crown Delineation".
+2. **FRTS** (Journal of Big Data, 2026, journal extension): "Full-Resolution Training Supervision: Architecture-Agnostic Boundary Enhancement for Tree Crown Delineation".
 
-> **Authors:** Attavit Wilaiwongsakul, Bin Liang, Wenfeng Jia, Bryan Zheng, Fang Chen  
-> **Affiliation:** University of Technology Sydney, Charles Sturt University
+The journal paper significantly extends the conference paper with two additional architectures (five in total), multi-seed statistical validation, bootstrap confidence intervals, cross-dataset zero-shot evaluation on four external datasets, and a corrected SETR baseline (see [CHANGELOG](CHANGELOG.md) for details).
 
----
+> **Note on repository history.** This repository was previously named `bare`; it was renamed to `frts` when the journal extension was released. Old URLs redirect automatically. Historical snapshots are preserved as git tags (`paper/ausdm2025`, `paper/jbd2026`).
 
-## Abstract
+## Key Contributions
 
-Tree crown delineation from aerial and satellite imagery is critical for forest inventory, biodiversity assessment, and ecosystem monitoring. However, existing segmentation methods struggle with accurate boundary delineation due to resolution loss in deep neural networks. We propose **BARE** (Boundary-Aware with Resolution Enhancement), a novel strategy that enhances segmentation architectures by maintaining full input resolution during training and inference. BARE provides external supervision at the original resolution, significantly improving boundary accuracy across multiple state-of-the-art architectures (SegFormer, PSPNet, SETR) with minimal computational overhead.
+- **Full-Resolution Training Supervision** (FRTS): a training-time-only modification that bilinearly upsamples decoder logits to ground-truth resolution for loss computation. No parameters added, no architectural changes, no inference overhead.
+- **Architecture-agnostic validation** across five paradigms: CNN-based (DeepLabV3), pure transformer (SETR), hierarchical transformer (SegFormer), hybrid transformer (UperNet + Swin), and query-based (OneFormer).
+- **Boundary IoU (B-IoU)** established as a complementary evaluation metric for TCD, with consistent 20-30 percentage-point gaps exposed between standard IoU and B-IoU across architectures.
+- **Statistical rigor**: three-seed experiments, Friedman tests, and bootstrap 95% confidence intervals on all reported architecture comparisons.
+- **Cross-dataset evaluation**: zero-shot transfer on SelvaMask, BAMFORESTS, SavannaTreeAI, and Quebec datasets.
 
-## Key Features
+## Repository Layout
 
-- **🎯 BARE Strategy**: Full-resolution supervision and selective use of class-weighting improves boundary delineation without architectural modifications
-- **🏗️ Multi-Architecture Support**: Unified framework for SegFormer, PSPNet, and SETR with consistent improvements
-- **⚡ Efficient Training**: Mixed precision, gradient accumulation, and optimized data loading
-- **📊 Comprehensive Evaluation**: Boundary IoU, standard metrics, and detailed visualization tools
-- **🔧 Production-Ready**: Complete pipeline from training to deployment with checkpointing and model export
-
-## How BARE Works
-
-The BARE strategy enhances existing architectures through a simple yet effective approach:
-
-1. **External Resolution Enhancement**: Instead of modifying the architecture, we add an external upsampling layer after the decoder
-2. **Full-Resolution Supervision**: Loss is computed on full-resolution outputs, providing stronger gradient signals for boundary regions
-3. **Training-Time Enhancement**: The upsampling is applied during training to enforce full-resolution predictions
-4. **Inference Flexibility**: Models can generate outputs at any resolution without retraining
-
-**Benefits:**
-- ✅ **Plug-and-play**: Works with any segmentation architecture
-- ✅ **Boundary accuracy**: Significant improvements in boundary-aware metrics
-- ✅ **Minimal overhead**: <5% increase in training time
-- ✅ **No architecture changes**: Preserves model properties and pre-trained weights
-
-## Requirements
-
-- Python 3.8+
-- PyTorch 2.0+
-- CUDA 11.0+ (for GPU training)
-- 16GB+ RAM (32GB recommended for larger models)
-- GPU with 8GB+ VRAM (for training)
-
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/attavit14203638/bare.git
-cd bare
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Verify installation
-python -c "import torch; print(f'PyTorch {torch.__version__}')"
+```
+Core/           # Original conference codebase (BARE, AusDM 2025):
+                # SegFormer, PSPNet, SETR with full-resolution supervision
+Extended/       # Journal extensions (FRTS, JBD 2026):
+                #   new_architectures.py    - DeepLabV3, UperNet+Swin, OneFormer
+                #   datasets_loader.py      - SelvaMask, BAMFORESTS, SavannaTreeAI, Quebec loaders
+                #   statistical_validation.py - Friedman test and bootstrap CIs
+                #   loss_functions.py       - loss functions (cross-entropy default)
+                #   visualization.py        - figures used in the manuscript
+                #   tensorboard_utils.py    - training diagnostics
+Notebook/       # Interactive training and analysis notebooks
 ```
 
-## Quick Start
+## Getting Started
+
+### Installation
 
 ```bash
-# Train SegFormer with BARE on TCD dataset
-python main.py train \
-    --architecture segformer \
-    --dataset_name restor/tcd \
-    --model_name nvidia/segformer-b0-finetuned-ade-512-512 \
-    --output_dir ./outputs \
-    --num_epochs 50 \
-    --train_batch_size 8 \
-    --mixed_precision
-
-# Evaluate the trained model
-python main.py evaluate \
-    --config_path ./outputs/effective_train_config.json \
-    --model_path ./outputs/best_checkpoint \
-    --output_dir ./eval_results
+git clone https://github.com/attavit14203638/frts.git
+cd frts
+pip install -r Core/requirements.txt
 ```
-
-## Usage Guide
 
 ### Training
 
-**Command-Line Interface:**
-
 ```bash
-# Basic training
-python main.py train --output_dir ./training_output
-
-# Training with specific parameters
-python main.py train \
-    --dataset_name restor/tcd \
+# Baseline training (no full-resolution supervision)
+python Core/main.py train \
+    --architecture segformer \
     --model_name nvidia/mit-b5 \
-    --output_dir ./my_trained_model \
-    --num_epochs 15 \
-    --learning_rate 6e-5 \
-    --train_batch_size 4 \
-    --mixed_precision
+    --dataset_name restor/tcd \
+    --output_dir ./outputs/segformer_baseline \
+    --num_epochs 50 \
+    --train_time_upsample False
 
-# Training using a config file with parameter overrides
-python main.py train \
-    --config_path ./configs/base_config.json \
-    --learning_rate 7e-5 \
-    --output_dir ./tuned_model
+# Full-resolution supervision
+python Core/main.py train \
+    --architecture segformer \
+    --model_name nvidia/mit-b5 \
+    --dataset_name restor/tcd \
+    --output_dir ./outputs/segformer_fullres \
+    --num_epochs 50 \
+    --train_time_upsample True
 ```
 
-*Use `python main.py train --help` for all available options.*
-
-**Python API:**
-
-```python
-from config import Config
-from pipeline import run_training_pipeline
-
-# Create configuration for BARE SegFormer
-config = Config({
-    "architecture": "segformer",
-    "dataset_name": "restor/tcd",
-    "model_name": "nvidia/segformer-b0-finetuned-ade-512-512",
-    "use_bare_strategy": True,
-    "output_dir": "./outputs",
-    "num_epochs": 10,
-    "learning_rate": 1e-4,
-    "train_batch_size": 8
-})
-
-# Run training pipeline
-results = run_training_pipeline(config=config)
-```
-
-### Prediction / Inference
-
-**Command-Line Interface:**
-
-```bash
-# Predict on a single image
-python main.py predict \
-    --config_path ./my_trained_model/effective_train_config.json \
-    --model_path ./my_trained_model/final_model \
-    --image_paths ./path/to/your/image.png \
-    --output_dir ./prediction_results
-
-# Predict on multiple images with visualization
-python main.py predict \
-    --config_path ./my_trained_model/effective_train_config.json \
-    --model_path ./my_trained_model/final_model \
-    --image_paths ./images/img1.tif ./images/img2.tif \
-    --output_dir ./prediction_results_batch \
-    --visualize --show_confidence
-```
-
-*Use `python main.py predict --help` for all available options.*
-
-**Python API:**
-
-```python
-from config import Config
-from pipeline import run_prediction_pipeline
-
-# Load config used during training
-config = Config.load("./my_trained_model/effective_train_config.json")
-
-# Run prediction
-results = run_prediction_pipeline(
-    config=config,
-    image_paths=["./path/to/your/image.png", "./another/image.tif"],
-    model_path="./my_trained_model/final_model",
-    output_dir="./api_predictions",
-    visualize=True
-)
-
-# Access results
-# segmentation_map = results["segmentation_maps"][0]
-```
+See `python Core/main.py train --help` for the full argument list.
 
 ### Evaluation
 
-**Command-Line Interface:**
-
 ```bash
-# Evaluate a trained model
-python main.py evaluate \
-    --config_path ./my_trained_model/effective_train_config.json \
-    --model_path ./my_trained_model/final_model \
-    --output_dir ./evaluation_results
-
-# Evaluate with custom parameters
-python main.py evaluate \
-    --config_path ./my_trained_model/effective_train_config.json \
-    --model_path ./my_trained_model/final_model \
-    --output_dir ./evaluation_results_custom \
-    --eval_batch_size 32 \
-    --no-visualize_worst
+python Core/main.py evaluate \
+    --config_path ./outputs/segformer_fullres/effective_train_config.json \
+    --model_path ./outputs/segformer_fullres/final_model \
+    --output_dir ./eval/segformer_fullres
 ```
 
-*Use `python main.py evaluate --help` for all available options.*
+### Cross-Dataset Zero-Shot Evaluation
 
-## Architecture Configuration
+Loaders for the four external datasets are in `Extended/datasets_loader.py`. See the journal paper (Section 5.2) for the evaluation protocol.
 
-BARE supports multiple state-of-the-art architectures. Here are configuration examples:
+## Supported Architectures
 
-### SegFormer with BARE
+| Architecture | Backbone | Decoder | R (reduction) | Params | Source |
+|---|---|---|---|---|---|
+| DeepLabV3 | ResNet-50 | ASPP + linear | 8 | ~39M | Extended |
+| SETR | ViT-Base | PUP | 16 | ~90M | Core |
+| SegFormer | MiT-B5 | All-MLP | 4 | ~82M | Core |
+| UperNet+Swin | Swin-Base | UperNet (PPM+FPN) | 4 | ~110M | Extended |
+| OneFormer | Swin-Large | Mask Transformer | 4 | ~220M | Extended |
+| PSPNet | ResNet-50 | PSP | 8 | ~49M | Core (conference only) |
 
-```python
-config = Config({
-    "architecture": "segformer",
-    "model_name": "nvidia/mit-b5",
-    "train_time_upsample": True,
-    "class_weights_enabled": True
-})
-```
+PSPNet is retained for reproducibility of the AusDM 2025 paper but is not part of the journal evaluation.
 
-### PSPNet with BARE
+## Papers
 
-```python
-config = Config({
-    "architecture": "pspnet",
-    "backbone": "resnet50",
-    "dataset_name": "restor/tcd",
-    "output_dir": "./outputs_pspnet",
-    "num_epochs": 10,
-    "learning_rate": 1e-4,
-    "train_batch_size": 8
-})
-```
-
-### SETR with BARE
-
-```python
-# Enhanced for 1024×1024 resolution
-config = Config({
-    "architecture": "setr",
-    "setr_embed_dim": 768,
-    "setr_patch_size": 16,
-    "setr_input_size": 1024  # Native 1024×1024 support
-})
-
-# Custom input size
-config = Config({
-    "architecture": "setr",
-    "setr_embed_dim": 768,
-    "setr_patch_size": 16,
-    "setr_input_size": 512   # Configurable input resolution
-})
-```
-
-## Advanced Usage
-
-### Dataset Inspection
-
-Visualize and analyze dataset samples before training:
-
-```python
-from inspect_dataset import inspect_dataset_samples
-
-# Inspect dataset with visualization
-inspect_dataset_samples(
-    dataset_name="restor/tcd",
-    num_samples=5,
-    save_dir="./dataset_inspection",
-    seed=42
-)
-```
-
-### Interactive Training
-
-For interactive experimentation and visualization, use the provided Jupyter notebook:
-
-```bash
-jupyter notebook bare_pipeline.ipynb
-```
-
-**Note:** The notebooks are provided without outputs to keep repository size manageable. Run the cells to generate outputs.
-
-## For Developers
-
-### Code Structure
-
-The codebase is organized into modular components with clear separation of concerns:
-
-| Module | Description |
-|--------|-------------|
-| `main.py` | CLI entry point with subcommands |
-| `pipeline.py` | Centralized training and evaluation pipeline |
-| `config.py` | Configuration management with validation |
-| `model.py` | Multi-architecture models with BARE strategy support |
-| `dataset.py` | Dataset loading and processing with error handling |
-| `metrics.py` | Evaluation metrics for segmentation tasks |
-| `checkpoint.py` | Checkpoint management with metadata |
-| `weights.py` | Class weight computation for handling imbalance |
-| `visualization.py` | Visualization tools for images and results |
-| `image_utils.py` | Image processing utilities |
-| `tensorboard_utils.py` | TensorBoard integration |
-| `exceptions.py` | Custom exception hierarchy |
-| `utils.py` | General utilities |
-| `cross_validation.py` | Cross-validation support |
-| `inspect_dataset.py` | Dataset inspection tools |
-
-### Directory Structure
-
-```
-bare/
-├── main.py                    # CLI entry point
-├── pipeline.py                # Training and evaluation pipeline
-├── config.py                  # Configuration management
-├── model.py                   # Multi-architecture models with BARE
-├── dataset.py                 # Dataset handling
-├── metrics.py                 # Evaluation metrics
-├── checkpoint.py              # Checkpoint management
-├── weights.py                 # Class weight computation
-├── visualization.py           # Visualization utilities
-├── image_utils.py             # Image processing utilities
-├── tensorboard_utils.py       # TensorBoard integration
-├── exceptions.py              # Custom exceptions
-├── utils.py                   # General utilities
-├── cross_validation.py        # Cross-validation support
-├── inspect_dataset.py         # Dataset inspection tools
-├── requirements.txt           # Python dependencies
-├── bare_pipeline.ipynb        # Interactive training notebook
-├── visualize_validation.ipynb # Visualization notebook
-├── README.md                  # This file
-├── DOCUMENTATION.md           # Detailed technical documentation
-├── CONTRIBUTING.md            # Contribution guidelines
-└── LICENSE                    # MIT License
-```
-
-## Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## Citation
-
-If you find this work useful for your research, please cite our paper:
+### Journal (primary)
 
 ```bibtex
-@inproceedings{wilaiwongsakul2025bare,
-  title={BARE: Boundary-Aware with Resolution Enhancement for Tree Crown Delineation},
-  author={Wilaiwongsakul, Attavit and Liang, Bin and Jia, Wenfeng and Zheng, Bryan and Chen, Fang},
-  booktitle={Australasian Data Science and Machine Learning Conference},
-  pages={279--293},
-  year={2025},
-  publisher={Springer Nature Singapore},
-  doi={10.1007/978-981-95-6786-7_20}
+@article{wilaiwongsakul_frts_2026,
+  author  = {Wilaiwongsakul, Attavit and Liang, Bin and Zheng, Bryan and Chen, Fang},
+  title   = {Full-Resolution Training Supervision: Architecture-Agnostic Boundary Enhancement for Tree Crown Delineation},
+  journal = {Journal of Big Data},
+  year    = {2026},
+  note    = {Under review}
 }
+```
+
+### Conference
+
+```bibtex
+@incollection{wilaiwongsakul_bare_2026,
+  author    = {Wilaiwongsakul, Attavit and Liang, Bin and Jia, Wenfeng and Zheng, Bryan and Chen, Fang},
+  title     = {{BARE}: {Boundary}-{Aware} with {Resolution} {Enhancement} for {Tree} {Crown} {Delineation}},
+  booktitle = {Data Science and Machine Learning. AusDM 2025},
+  editor    = {Nguyen, Quang V. and Li, Yan and Kwan, Paul and Zhao, Yanchun and Boo, Yee Ling and Nayak, Richi},
+  series    = {Communications in Computer and Information Science},
+  volume    = {2765},
+  pages     = {302--315},
+  year      = {2026},
+  publisher = {Springer, Singapore},
+  doi       = {10.1007/978-981-95-6786-7_20}
+}
+```
+
+> **Important correction.** The SETR baseline results in the AusDM 2025 conference paper contained an implementation error: the baseline configuration inadvertently applied logit upsampling during training, making the baseline behave like full-resolution supervision. This led to near-identical B-IoU scores (0.643 baseline vs. 0.644 full-res). The corrected implementation in the journal extension reveals substantially larger B-IoU improvements for SETR (+0.1045), consistent with the resolution bottleneck hypothesis. See the [CHANGELOG](CHANGELOG.md) for the commit fix.
+
+## Historical Snapshots
+
+Use git tags to check out the exact code state corresponding to each paper:
+
+```bash
+# AusDM 2025 conference paper (BARE)
+git checkout paper/ausdm2025
+
+# Journal of Big Data extension (FRTS)
+git checkout paper/jbd2026
 ```
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License — see [LICENSE](LICENSE).
 
----
+## Citation
 
-**⭐ If you find this work useful, please consider starring the repository and citing our paper!**
+If you use this code, please cite both papers above, or use the `CITATION.cff` file via GitHub's "Cite this repository" button.
