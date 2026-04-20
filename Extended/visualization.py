@@ -11,25 +11,30 @@ across multiple files.
 """
 
 import os
+import sys
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
-import io # Added for in-memory buffer
+from matplotlib.colors import ListedColormap, Colormap
+from matplotlib.figure import Figure
+import io
 import matplotlib.gridspec as gridspec
 from typing import Dict, Tuple, List, Optional, Union, Any, Callable
 from PIL import Image
 import logging
 from torch.nn import functional as F
-import cv2 # Needed for CAM visualization overlay
-import seaborn as sns # Added for confusion matrix heatmap
-import copy # Import copy module
-from scipy.ndimage import binary_dilation, generate_binary_structure # Added for boundary visualization
-from utils import LOGGER_NAME, get_logger
-from torch.optim import Optimizer # Added for LR schedule plot
-from torch.optim.lr_scheduler import _LRScheduler # Added for LR schedule plot
+import cv2
+import seaborn as sns
+import copy
+from scipy.ndimage import binary_dilation, generate_binary_structure
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import _LRScheduler
 
-# Set up module logger
+_codebase_dir = os.path.join(os.path.dirname(__file__), '..')
+if _codebase_dir not in sys.path:
+    sys.path.insert(0, _codebase_dir)
+from Core.utils import LOGGER_NAME, get_logger
+
 logger = get_logger()
 
 # Grad-CAM related imports
@@ -43,7 +48,7 @@ except ImportError:
     logger.warning("pytorch-grad-cam not installed. CAM/Grad-CAM functionality will not be available. Install with: pip install grad-cam")
 
 # Moved from image_utils.py
-def create_colormap(num_classes: int) -> ListedColormap:
+def create_colormap(num_classes: int) -> Colormap:
     """
     Create colormap for visualization.
 
@@ -210,7 +215,7 @@ def visualize_segmentation(
             from PIL import Image as PILImage
             logger.info(f"Attempting PIL resize from {segmentation_map.shape} to {(image.shape[1], image.shape[0])}")
             mask_img = PILImage.fromarray(segmentation_map.astype(np.uint8))
-            mask_img = mask_img.resize((image.shape[1], image.shape[0]), resample=PILImage.NEAREST)
+            mask_img = mask_img.resize((image.shape[1], image.shape[0]), resample=PILImage.Resampling.NEAREST)
             segmentation_map = np.array(mask_img)
             logger.info(f"Resized segmentation map using PIL. New shape: {segmentation_map.shape}")
             
@@ -375,7 +380,7 @@ def plot_segmentation_comparison(
     alpha: float = 0.5,
     save_path: Optional[str] = None,
     id2label: Optional[Dict[int, str]] = None
-) -> plt.Figure:
+) -> Figure:
     """
     Plot comparison between original image, prediction, and target.
 
@@ -446,7 +451,7 @@ def visualize_class_distribution(
     title: str = 'Class Distribution in Dataset',
     figsize: Tuple[int, int] = (8, 5),
     save_path: Optional[str] = None
-) -> plt.Figure:
+) -> Figure:
     """
     Plots the class distribution as a bar chart.
 
@@ -494,10 +499,10 @@ def plot_confusion_matrix(
     class_names: List[str],
     normalize: bool = False,
     title: str = 'Confusion Matrix',
-    cmap=plt.cm.Blues,
+    cmap: Any = "Blues",
     figsize: Tuple[int, int] = (8, 6),
     save_path: Optional[str] = None
-) -> plt.Figure:
+) -> Figure:
     """
     Plots the confusion matrix using seaborn heatmap.
 
@@ -554,7 +559,7 @@ def plot_training_metrics(
     figsize: Tuple[int, int] = (12, 8),
     save_path: Optional[str] = None,
     smoothing_window: int = 1
-) -> plt.Figure:
+) -> Figure:
     """
     Plot training metrics over time.
 
@@ -635,7 +640,7 @@ def plot_loss_reduction(
     save_path: Optional[str] = None,
     title: str = "Loss Reduction Analysis",
     cmap: str = "viridis"
-) -> plt.Figure:
+) -> Figure:
     """
     Specialized visualization for loss reduction during training.
     
@@ -670,6 +675,7 @@ def plot_loss_reduction(
     
     # Calculate loss reduction velocity (negative of first derivative)
     velocity = None
+    steps_for_velocity: List[int] = []
     if show_velocity and len(loss_history) > 1:
         # Use smoothed values for velocity if available
         values_for_velocity = smoothed_loss if smoothed_loss else loss_history
@@ -810,7 +816,7 @@ def plot_accuracy_gain(
     save_path: Optional[str] = None,
     title: str = "Accuracy Metrics Improvement Analysis",
     ascending_metrics: Optional[List[str]] = None
-) -> plt.Figure:
+) -> Figure:
     """
     Specialized visualization for accuracy metric improvements during training.
     
@@ -867,7 +873,7 @@ def plot_accuracy_gain(
     
     # Process each metric
     for i, metric_name in enumerate(metrics_to_plot):
-        ax = axes[i] if num_metrics > 1 else axes
+        ax: Any = axes[i] if num_metrics > 1 else axes
         values = metric_history[metric_name]
         
         # Ensure steps and values align in length
@@ -1069,10 +1075,10 @@ def plot_prediction_confidence(
     axes[0].axis("off")
 
     if class_names:
-        pred_vis = visualize_segmentation(image, prediction, id2label={i: name for i, name in enumerate(class_names)})
+        pred_vis = visualize_segmentation(image, prediction, id2label={i: name for i, name in enumerate(class_names)})  # type: ignore[arg-type]
         axes[1].imshow(pred_vis)
     else:
-        pred_vis = create_pseudocolor(prediction)
+        pred_vis = create_pseudocolor(prediction)  # type: ignore[arg-type]
         axes[1].imshow(pred_vis)
     axes[1].set_title("Prediction")
     axes[1].axis("off")
@@ -1114,7 +1120,7 @@ def plot_error_analysis_map(
     figsize: Tuple[int, int] = (15, 5),
     save_path: Optional[str] = None,
     title: Optional[str] = "Error Analysis"
-) -> plt.Figure:
+) -> Figure:
     """
     Visualize the errors in prediction compared to ground truth.
     
@@ -1208,7 +1214,7 @@ def plot_class_distribution(
     title: str = 'Class Distribution in Dataset',
     figsize: Tuple[int, int] = (8, 5),
     save_path: Optional[str] = None
-) -> plt.Figure:
+) -> Figure:
     """
     Alias for visualize_class_distribution function.
     
@@ -1234,7 +1240,7 @@ def plot_training_progress_dashboard(
     save_path: Optional[str] = None,
     title: str = "Training Progress Dashboard",
     style: str = "default"
-) -> plt.Figure:
+) -> Figure:
     """
     Create a comprehensive dashboard visualization of training progress with loss reduction and accuracy gains.
     
@@ -1280,7 +1286,7 @@ def plot_training_progress_dashboard(
     
     # Create figure with GridSpec for flexible layout
     fig = plt.figure(figsize=figsize)
-    gs = plt.GridSpec(4, 4, figure=fig)
+    gs = gridspec.GridSpec(4, 4, figure=fig)
     
     # 1. Create loss plot (larger panel on top)
     ax_loss = fig.add_subplot(gs[0:2, :])
@@ -1460,7 +1466,7 @@ def visualize_boundary_iou_components(
     pred_mask_np: np.ndarray, # Should be binary (0 or 1)
     dilation_pixels: int = 5, # Or calculate based on dilation_ratio and image size
     alpha: float = 0.7,
-    colors: dict = None
+    colors: Optional[dict] = None
 ) -> np.ndarray:
     """
     Visualizes True Positive, False Positive, and False Negative boundary pixels.
@@ -1532,7 +1538,7 @@ def plot_prediction_comparison_with_confidence(
     id2label: Optional[Dict[int, str]] = None,
     colormap: str = 'viridis',
     title: Optional[str] = "Prediction vs Ground Truth vs Confidence"
-) -> plt.Figure:
+) -> Figure:
     """
     Visualize original image, prediction, ground truth, and confidence map side by side.
 
@@ -1610,7 +1616,7 @@ def plot_learning_rate_schedule(
     title: str = "Learning Rate Schedule",
     figsize: Tuple[int, int] = (10, 4),
     save_path: Optional[str] = None
-) -> plt.Figure:
+) -> Figure:
     """
     Plots the learning rate schedule over the training steps.
 
@@ -1715,7 +1721,7 @@ def visualize_segmentation_enhanced(
     if image.shape[:2] != segmentation_map.shape:
         from PIL import Image as PILImage
         mask_img = PILImage.fromarray(segmentation_map.astype(np.uint8))
-        mask_img = mask_img.resize((image.shape[1], image.shape[0]), resample=PILImage.NEAREST)
+        mask_img = mask_img.resize((image.shape[1], image.shape[0]), resample=PILImage.Resampling.NEAREST)
         segmentation_map = np.array(mask_img)
 
     vis = image.copy()
@@ -1784,13 +1790,13 @@ def visualize_error_decomposition(
     if image.shape[:2] != prediction.shape:
         from PIL import Image as PILImage
         pred_img = PILImage.fromarray(prediction.astype(np.uint8))
-        pred_img = pred_img.resize((image.shape[1], image.shape[0]), resample=PILImage.NEAREST)
+        pred_img = pred_img.resize((image.shape[1], image.shape[0]), resample=PILImage.Resampling.NEAREST)
         prediction = np.array(pred_img)
     
     if image.shape[:2] != ground_truth.shape:
         from PIL import Image as PILImage
         gt_img = PILImage.fromarray(ground_truth.astype(np.uint8))
-        gt_img = gt_img.resize((image.shape[1], image.shape[0]), resample=PILImage.NEAREST)
+        gt_img = gt_img.resize((image.shape[1], image.shape[0]), resample=PILImage.Resampling.NEAREST)
         ground_truth = np.array(gt_img)
 
     vis = image.copy()
@@ -1841,7 +1847,7 @@ def plot_enhanced_segmentation_analysis(
     include_boundary_analysis: bool = True,
     include_error_decomposition: bool = True,
     save_path: Optional[str] = None
-) -> plt.Figure:
+) -> Figure:
     """
     Create comprehensive enhanced segmentation analysis with multiple visualization panels.
 
@@ -2008,7 +2014,7 @@ def create_confidence_visualization(
     if image.shape[:2] != confidence_map.shape:
         from PIL import Image as PILImage
         conf_img = PILImage.fromarray((confidence_map * 255).astype(np.uint8))
-        conf_img = conf_img.resize((image.shape[1], image.shape[0]), resample=PILImage.BILINEAR)
+        conf_img = conf_img.resize((image.shape[1], image.shape[0]), resample=PILImage.Resampling.BILINEAR)
         confidence_map = np.array(conf_img) / 255.0
 
     # Create confidence overlay
@@ -2068,7 +2074,11 @@ def prepare_and_visualize_augmentations(
         else:
             logger.warning(f"Unsupported sample type: {type(sample)}")
             return False
-        
+
+        if image is None or mask is None:
+            logger.warning("Could not extract image/mask from sample")
+            return False
+
         # Convert to numpy if tensor
         if isinstance(image, torch.Tensor):
             if image.dim() == 3 and image.shape[0] in [1, 3]:
