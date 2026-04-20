@@ -81,14 +81,16 @@ Loaders for the four external datasets are in `Extended/datasets_loader.py`. See
 
 ## Supported Architectures
 
-| Architecture | Backbone | Decoder | R (reduction) | Params | Source |
-|---|---|---|---|---|---|
-| DeepLabV3 | ResNet-50 | ASPP + linear | 8 | ~39M | Extended |
-| SETR | ViT-Base | PUP | 16 | ~90M | Core |
-| SegFormer | MiT-B5 | All-MLP | 4 | ~82M | Core |
-| UperNet+Swin | Swin-Base | UperNet (PPM+FPN) | 4 | ~110M | Extended |
-| OneFormer | Swin-Large | Mask Transformer | 4 | ~220M | Extended |
-| PSPNet | ResNet-50 | PSP | 8 | ~49M | Core (conference only) |
+Ordered by architecture family (CNN, Hybrid, Transformer) and then by reduction factor R within each family.
+
+| Architecture | Backbone | Decoder | R (reduction) | Params | Family | Source |
+|---|---|---|---|---|---|---|
+| DeepLabV3 | ResNet-50 | ASPP + linear | 8 | ~39M | CNN | Extended |
+| PSPNet | ResNet-50 | PSP | 8 | ~49M | CNN | Core (conference only) |
+| UperNet+Swin | Swin-Base | UperNet (PPM+FPN) | 4 | ~110M | Hybrid | Extended |
+| OneFormer | Swin-Large | Mask Transformer | 4 | ~220M | Hybrid | Extended |
+| SegFormer | MiT-B5 | All-MLP | 4 | ~82M | Transformer | Core |
+| SETR | ViT-Base | PUP | 16 | ~90M | Transformer | Core |
 
 PSPNet is retained for reproducibility of the AusDM 2025 paper but is not part of the journal evaluation.
 
