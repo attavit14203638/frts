@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Utility functions for TCD-SegFormer model.
+Utility functions for TCD segmentation models.
 
 This module provides common utility functions used throughout the codebase,
 including random seed setting, logging setup, and parameter counting.
@@ -17,7 +17,7 @@ import logging
 from typing import Dict, Any, Optional, Union, Callable
 
 # Standardized logger name used throughout the codebase
-LOGGER_NAME = "BARE"
+LOGGER_NAME = "TCD"
 
 # Configure the root logger at module import time
 def _configure_root_logger():
@@ -166,7 +166,7 @@ def get_logger() -> logging.Logger:
     This is useful when a function needs a logger but doesn't have one passed as a parameter.
     
     Returns:
-        The standardized TCD-SegFormer logger
+        The standardized TCD logger
     """
     return logging.getLogger(LOGGER_NAME)
 

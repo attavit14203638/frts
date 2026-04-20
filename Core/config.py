@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Centralized configuration management for TCD-BARE model.
+Centralized configuration management for TCD segmentation models.
 
 This module provides a consistent way to manage configuration across the codebase,
 reducing duplication and enforcing consistent parameter handling.
@@ -20,13 +20,15 @@ logger = get_logger()
 # Default configuration values
 DEFAULT_CONFIG = {
     # Architecture selection
-    # Options: "segformer", "pspnet", "setr"
+    # Options: "deeplabv3","setr","segformer","upernet_swin","oneformer"
     #
-    # segformer   → uses `model_name` (e.g., "nvidia/mit-b5") via Hugging Face
-    # pspnet      → uses `backbone` (e.g., "resnet50") via segmentation-models-pytorch
-    # setr        → uses `setr_embed_dim`, `setr_patch_size`, `setr_input_size` via timm ViT
+    # deeplabv3     → uses `backbone` (e.g., "resnet50") via segmentation-models-pytorch
+    # setr          → uses `setr_embed_dim`, `setr_patch_size`, `setr_input_size` via timm ViT
+    # segformer     → uses `model_name` (e.g., "nvidia/mit-b5") via Hugging Face
+    # upernet_swin  → uses `upernet_swin_model` (e.g., "openmmlab/upernet-swin-base") via Hugging Face
+    # oneformer     → uses `oneformer_model` (e.g., "shi-labs/oneformer_ade20k_swin_large") via Hugging Face
     
-    "architecture": "segformer",
+    "architecture": "deeplabv3",
 
     # ── Architecture-specific parameters ──────────────────────────────────
     # Only the params for the selected architecture above are used at runtime.
@@ -34,31 +36,45 @@ DEFAULT_CONFIG = {
     # SegFormer
     "model_name": "nvidia/mit-b5",
     
-    # PSPNet
+    # DeepLabV3
     "backbone": "resnet50",
     
     # SETR
     "setr_embed_dim": 768,
     "setr_patch_size": 16,
     "setr_input_size": 1024,
+    
+    # OneFormer
+    "oneformer_model": "shi-labs/oneformer_ade20k_swin_large",
+    "oneformer_use_auxiliary_loss": True,  # Disable to save ~15-20% GPU memory
+    
+    # UperNet+Swin
+    "upernet_swin_model": "openmmlab/upernet-swin-base",
 
     # ── Dataset parameters ────────────────────────────────────────────────
     "dataset_name": "restor/tcd",
     "image_size": None,
     "validation_split": 0.1,
+    
+    # External dataset paths (for cross-dataset validation)
+    "dataset_paths": {
+        "selvamask": None,    # HuggingFace (selvamask/SelvaMask) — no local path needed
+        "bamforests": None,   # Set to local path, e.g., "/path/to/bamforests"
+        "savannatreeai": None, # Set to local path, e.g., "/path/to/savannatreeai"
+        "quebec": None,       # Set to local path, e.g., "/path/to/quebec" (GeoTIFF + GeoPackage)
+    },
 
-    # ── BARE strategy ─────────────────────────────────────────────────────
+    # ── Train-time upsampling ─────────────────────────────────────────────
     # These apply across architectures
     "train_time_upsample": False,
     "interpolation_mode": "bilinear",
     "interpolation_align_corners": False,
-    "class_weights_enabled": False,
 
     # ── Training parameters ───────────────────────────────────────────────
-    "output_dir": "./outputs_segformer_baseline",
+    "output_dir": "./outputs_deeplabv3_fullres_42",
     "train_batch_size": 2,
     "eval_batch_size": 4,
-    "num_epochs": 1,
+    "num_epochs": 50,
     "learning_rate": 1e-5,
     "weight_decay": 0.01,
     "num_workers": 8,
@@ -67,6 +83,21 @@ DEFAULT_CONFIG = {
     "gradient_checkpointing": True,
     "mixed_precision": True,
     
+    # Loss function parameters
+    "loss_type": "cross_entropy",  # Options: 'cross_entropy', 'dice', 'boundary', 'hausdorff', 'dice_ce', 'boundary_ce', 'combined'
+    "loss_params": {
+        "smooth": 1e-6,           # For Dice loss
+        "alpha": 2.0,             # For Hausdorff loss (sharpness)
+        "include_background": False,
+        "ce_weight": 0.5,         # Weight for CE in combined losses
+        "dice_weight": 0.5,       # Weight for Dice in combined losses
+        "boundary_weight": 0.5,   # Weight for Boundary in combined losses
+        "hausdorff_weight": 0.5,  # Weight for Hausdorff in combined losses
+        "use_ce": True,           # For 'combined' loss type
+        "use_dice": False,
+        "use_boundary": False,
+        "use_hausdorff": False
+    },
 
     # Scheduler parameters
     "scheduler_type": "cosine_with_restarts",
@@ -117,6 +148,14 @@ DEFAULT_CONFIG = {
     "train_tile_threshold": 0.0,
     "inference_cpu_offload": False,
     
+    # Cross-validation parameters
+    "cross_validation": {
+        "enabled": False,
+        "num_folds": 5,
+        "save_best_model_per_fold": True,
+        "metrics_to_track": ["f1_score_class_1", "IoU_class_1"]
+    },
+    
     # Logging parameters
     "logging_steps": 25,
     "eval_steps": 250,  
@@ -145,7 +184,7 @@ DEFAULT_CONFIG = {
 
 class Config:
     """
-    Configuration class for TCD-BARE.
+    Configuration class for TCD segmentation.
 
     This class manages configuration parameters with validation,
     saving/loading, and provides a consistent interface for all
@@ -328,12 +367,22 @@ class Config:
 
         # Validate architecture/backbone
         arch = self._config.get("architecture", "segformer")
-        supported_archs = ["segformer", "pspnet", "setr"]
+        supported_archs = ["segformer", "deeplabv3", "setr", "oneformer", "upernet_swin"]
         if arch not in supported_archs:
             errors.append(f"architecture must be one of {supported_archs}, got {arch}")
         
+        # DeepLabV3 ASPP decoder uses BatchNorm after global average pooling (1×1 spatial),
+        # which requires more than 1 value per channel → train_batch_size must be ≥ 2.
+        if arch == "deeplabv3":
+            bs = self._config.get("train_batch_size", 2)
+            if isinstance(bs, int) and bs < 2:
+                errors.append(
+                    f"train_batch_size must be >= 2 for DeepLabV3 (BatchNorm in ASPP "
+                    f"pooling branch fails with batch_size=1), got {bs}"
+                )
+
         # Validate backbone for architectures that require it
-        backbone_required_archs = ["pspnet"]
+        backbone_required_archs = ["deeplabv3"]
         if arch in backbone_required_archs:
             bb = self._config.get("backbone")
             if not isinstance(bb, str) or len(bb.strip()) == 0:
@@ -444,6 +493,24 @@ class Config:
         # Validate train_time_upsample
         if not isinstance(self._config.get("train_time_upsample", False), bool):
             errors.append("train_time_upsample must be a boolean")
+
+        # Validate loss function parameters
+        allowed_loss_types = ["cross_entropy", "dice", "boundary", "hausdorff", "dice_ce", "boundary_ce", "combined"]
+        loss_type = self._config.get("loss_type", "cross_entropy")
+        if loss_type not in allowed_loss_types:
+            errors.append(f"loss_type must be one of {allowed_loss_types}, got {loss_type}")
+        
+        loss_params = self._config.get("loss_params", {})
+        if not isinstance(loss_params, dict):
+            errors.append("loss_params must be a dictionary")
+        else:
+            if "smooth" in loss_params and (not isinstance(loss_params["smooth"], (int, float)) or loss_params["smooth"] < 0):
+                errors.append("loss_params.smooth must be a non-negative number")
+            if "alpha" in loss_params and (not isinstance(loss_params["alpha"], (int, float)) or loss_params["alpha"] <= 0):
+                errors.append("loss_params.alpha must be a positive number")
+            for weight_key in ["ce_weight", "dice_weight", "boundary_weight", "hausdorff_weight"]:
+                if weight_key in loss_params and (not isinstance(loss_params[weight_key], (int, float)) or loss_params[weight_key] < 0):
+                    errors.append(f"loss_params.{weight_key} must be a non-negative number")
 
         # Validate DataLoader parameters
         if not isinstance(self._config.get("dataloader_pin_memory", True), bool):
@@ -680,8 +747,14 @@ def adjust_config_for_architecture(config: Config) -> Config:
     elif arch == "segformer":
         logger.info("SegFormer architecture selected. No specific adjustments needed.")
 
-    elif arch == "pspnet":
-        logger.info("PSPNet architecture selected. No specific adjustments needed.")
+    elif arch == "deeplabv3":
+        logger.info("DeepLabV3 architecture selected. No specific adjustments needed.")
+
+    elif arch == "oneformer":
+        logger.info("OneFormer architecture selected. No specific adjustments needed.")
+
+    elif arch == "upernet_swin":
+        logger.info("UperNet+Swin architecture selected. No specific adjustments needed.")
 
     else:
         logger.warning(f"Unknown architecture '{arch}'. No adjustments applied.")

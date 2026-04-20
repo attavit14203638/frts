@@ -13,7 +13,7 @@ import torch
 import logging
 from typing import Dict, List, Tuple, Optional, Union, Any
 from sklearn import metrics as skmetrics
-from scipy.ndimage import binary_dilation, generate_binary_structure
+from scipy.ndimage import binary_dilation, generate_binary_structure, distance_transform_edt
 
 # Import centralized logger name
 from utils import LOGGER_NAME, get_logger
@@ -300,23 +300,37 @@ def calculate_boundary_iou(
     total_boundary_iou = 0.0
     valid_samples = 0
 
-    # Define connectivity structure for dilation (8-connectivity)
-    struct = generate_binary_structure(2, 2)
-
     # Calculate dilation amount based on image diagonal
     dilation_pixels = int(max(1, np.sqrt(h**2 + w**2) * dilation_ratio))
+
+    # Pre-compute structuring element for morphological boundary extraction
+    struct = generate_binary_structure(2, 1)
 
     for i in range(batch_size):
         gt = gt_mask[i]
         pred = pred_mask[i]
 
-        # Dilate masks
-        gt_dilated = binary_dilation(gt, structure=struct, iterations=dilation_pixels)
-        pred_dilated = binary_dilation(pred, structure=struct, iterations=dilation_pixels)
+        # Skip empty samples early (common for ignore-heavy datasets like Quebec)
+        gt_any = gt.any()
+        pred_any = pred.any()
+        if not gt_any and not pred_any:
+            total_boundary_iou += 1.0
+            valid_samples += 1
+            continue
 
-        # Get boundary regions
-        gt_boundary = gt_dilated & (~gt)
-        pred_boundary = pred_dilated & (~pred)
+        # Fast boundary extraction using morphological dilation + XOR
+        # Iterating binary_dilation is much faster than distance_transform_edt
+        if gt_any and not gt.all():
+            gt_dilated = binary_dilation(gt, structure=struct, iterations=dilation_pixels)
+            gt_boundary = gt_dilated ^ gt
+        else:
+            gt_boundary = np.zeros_like(gt, dtype=bool)
+
+        if pred_any and not pred.all():
+            pred_dilated = binary_dilation(pred, structure=struct, iterations=dilation_pixels)
+            pred_boundary = pred_dilated ^ pred
+        else:
+            pred_boundary = np.zeros_like(pred, dtype=bool)
 
         # Calculate intersection and union of boundaries
         intersection = np.sum(gt_boundary & pred_boundary)
@@ -324,7 +338,6 @@ def calculate_boundary_iou(
 
         # Calculate Boundary IoU for this sample
         if union == 0:
-            # If both boundaries are empty (e.g., empty masks), IoU is 1 if masks match, 0 otherwise
             boundary_iou = 1.0 if np.all(gt == pred) else 0.0
         else:
             boundary_iou = intersection / union

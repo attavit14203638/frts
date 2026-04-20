@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Checkpoint management utilities for TCD-SegFormer model.
+Checkpoint management utilities for TCD segmentation models.
 
 This module provides functions for saving, loading, and managing model checkpoints
-to ensure consistent handling across the codebase.
+for all supported architectures (SegFormer, DeepLabV3, SETR, UperNet+Swin, OneFormer).
 """
 
 import os
@@ -146,6 +146,14 @@ def save_checkpoint(
                     }
                     with open(best_metric_file, 'w') as f:
                         json.dump(best_metric_data, f, indent=2)
+
+                    # Save full performance metrics in the same format as final_metrics.txt
+                    if metrics:
+                        best_metrics_file = os.path.join(best_checkpoint_dir, "best_metrics.txt")
+                        with open(best_metrics_file, 'w') as f:
+                            for metric_name, metric_value in metrics.items():
+                                f.write(f"{metric_name} = {metric_value:.4f}\n")
+                        logger.info(f"Best performance metrics saved to {best_metrics_file}")
 
                 except Exception as e:
                     logger.error(f"Failed to copy or save best checkpoint to {best_checkpoint_dir}: {e}")
@@ -450,6 +458,78 @@ def create_checkpoint_metadata(
     }
 
 
+def _resolve_checkpoint_config(model_path: str, config: Optional[Any], logger: logging.Logger) -> dict:
+    """
+    Read and merge checkpoint config.json with the passed config dict.
+
+    Priority: checkpoint config.json values are used as defaults, but the
+    passed ``config`` dict (from the pipeline run) takes precedence when
+    both provide the same key.
+
+    Returns a plain dict with all configuration values needed for model
+    construction.
+    """
+    merged: dict = {}
+
+    # 1. Read config.json from the checkpoint directory (or parent)
+    for candidate in [
+        os.path.join(model_path, "config.json"),
+        os.path.join(os.path.dirname(model_path), "config.json"),
+    ]:
+        if os.path.exists(candidate):
+            try:
+                with open(candidate, "r") as f:
+                    merged = json.load(f)
+                logger.info(f"Loaded checkpoint config from {candidate}")
+            except Exception as e:
+                logger.warning(f"Error reading {candidate}: {e}")
+            break
+
+    # 2. Overlay the runtime config (takes precedence)
+    if config is not None:
+        if hasattr(config, "items"):
+            for k, v in config.items():
+                if v is not None:
+                    merged[k] = v
+        elif hasattr(config, "to_dict"):
+            for k, v in config.to_dict().items():
+                if v is not None:
+                    merged[k] = v
+
+    return merged
+
+
+def _load_weights_into_model(model, model_path: str, logger: logging.Logger) -> None:
+    """
+    Load ``pytorch_model.bin`` (preferred) or ``model.pt`` into *model*.
+    """
+    candidates = [
+        os.path.join(model_path, "pytorch_model.bin"),
+        os.path.join(model_path, "model.pt"),
+    ]
+    for weight_path in candidates:
+        if os.path.exists(weight_path):
+            state_dict = torch.load(weight_path, map_location="cpu")
+            model.load_state_dict(state_dict, strict=True)
+            logger.info(f"Loaded weights from {weight_path}")
+            return
+    logger.warning(f"No pytorch_model.bin or model.pt found in {model_path}")
+
+
+def _attach_config_shim(model, cfg: dict, logger: logging.Logger) -> None:
+    """
+    Attach a minimal HF-like ``.config`` namespace so downstream code can
+    access ``id2label`` / ``label2id`` on non-HF wrapper models.
+    """
+    try:
+        id2label_map = cfg.get("id2label", {})
+        id2label_map = {int(k): v for k, v in id2label_map.items()} if isinstance(id2label_map, dict) else {}
+        label2id_map = cfg.get("label2id", {})
+        model.config = SimpleNamespace(id2label=id2label_map, label2id=label2id_map)
+    except Exception as e:
+        logger.warning(f"Failed to attach config shim: {e}")
+
+
 def load_model_for_evaluation(
     model_path: str,
     config: Optional[Any] = None,
@@ -457,423 +537,182 @@ def load_model_for_evaluation(
     logger: Optional[logging.Logger] = None
 ) -> Tuple[Any, Any]:
     """
-    Load a model for evaluation from a checkpoint or Hugging Face model name.
-    
-    Automatically detects whether the model is a standard Segformer or TrueResSegformer
-    and loads it accordingly. Also creates an appropriate image processor.
-    
+    Load a model for evaluation from a checkpoint directory or HuggingFace
+    model name.
+
+    Architecture is determined from the ``"architecture"`` key in the
+    checkpoint's ``config.json`` (or the passed *config* dict).  Supported
+    values: ``segformer``, ``deeplabv3``, ``setr``, ``upernet_swin``,
+    ``oneformer``.
+
     Args:
-        model_path: Path to checkpoint directory or Hugging Face model name
-        config: Optional configuration object for TrueResSegformer
-        device: Device to load the model onto (defaults to CPU if None)
-        logger: Optional logger for logging messages
-        
+        model_path: Path to checkpoint directory or HuggingFace model name.
+        config: Optional runtime configuration dict / Config object.
+        device: Device to place the model on (defaults to CPU).
+        logger: Optional logger instance.
+
     Returns:
-        Tuple of (model, image_processor)
+        Tuple of (model, image_processor).
     """
-    # Set up logger
     if logger is None:
         logger = get_logger()
-    
+
     logger.info(f"Loading model from: {model_path}")
-    
-    # Set device for model loading
+
     if device is None:
         device = torch.device("cpu")
     elif isinstance(device, str):
         device = torch.device(device)
-    
+
     try:
-        # Check if it's a local path or HF model name
         is_local_path = os.path.exists(model_path)
-        
-        if is_local_path:
-            # Try to determine if this is a TrueResSegformer checkpoint
-            is_true_res = False
-            model_type_indicators = [
-                "TrueResSegformer" in model_path,
-                "Segformer_TrueRes" in model_path,
-                (config is not None and config.get("use_true_res_segformer", False))
-            ]
-            
-            # Also check config.json if it exists
-            config_path = os.path.join(model_path, "config.json")
-            if os.path.exists(config_path):
-                try:
-                    with open(config_path, 'r') as f:
-                        model_config_dict = json.load(f)
-                        # Check for indicators in the config
-                        is_true_res = is_true_res or model_config_dict.get("model_type", "") == "trueressegformer"
-                except Exception as e:
-                    logger.warning(f"Error reading config.json: {e}")
-            
-            is_true_res = any(model_type_indicators) or is_true_res
-            
-            # Load model configuration
-            from transformers import AutoConfig
-            try:
-                model_config = AutoConfig.from_pretrained(model_path)
-            except Exception as e:
-                logger.warning(f"Failed to load model config with AutoConfig: {e}")
-                model_config = None
-            
-            if is_true_res:
-                # Load TrueResSegformer
-                try:
-                    from model import TrueResSegformer
-                    
-                    # Use provided config or create default
-                    if config is None:
-                        from config import Config
-                        eval_config = Config()
-                    else:
-                        eval_config = config
-                    
-                    # Create the model instance
-                    if model_config is not None:
-                        model = TrueResSegformer(
-                            config=model_config,
-                            project_config=eval_config,
-                            class_weights=None,  # Not needed for inference
-                            apply_class_weights=False  # Not needed for inference
-                        )
-                    else:
-                        # Fallback if no config
-                        from transformers import SegformerConfig
-                        default_config = SegformerConfig.from_pretrained("nvidia/mit-b0")
-                        model = TrueResSegformer(
-                            config=default_config,
-                            project_config=eval_config,
-                            class_weights=None,
-                            apply_class_weights=False
-                        )
-                    
-                    # Load the weights
-                    checkpoint_path = os.path.join(model_path, "pytorch_model.bin")
-                    if os.path.exists(checkpoint_path):
-                        state_dict = torch.load(checkpoint_path, map_location="cpu")
-                        # Remap keys: strip "segformer." prefix if present
-                        remapped_state_dict = {}
-                        for k, v in state_dict.items():
-                            if k.startswith("segformer."):
-                                remapped_state_dict[k[len("segformer."):]] = v
-                            else:
-                                remapped_state_dict[k] = v
-                        logger.info(f"Remapped state_dict keys for TrueResSegformer. Original count: {len(state_dict)}, Remapped count: {len(remapped_state_dict)}.")
-                        if len(state_dict) > 10 and len(remapped_state_dict) > 10:
-                             logger.debug(f"First 10 original keys: {list(state_dict.keys())[:10]}")
-                             logger.debug(f"First 10 remapped keys: {list(remapped_state_dict.keys())[:10]}")
-                        elif len(state_dict) > 0 :
-                             logger.debug(f"Original keys: {list(state_dict.keys())}")
-                             logger.debug(f"Remapped keys: {list(remapped_state_dict.keys())}")
 
-                        load_result = model.load_state_dict(remapped_state_dict, strict=False)
-                        logger.info("Successfully loaded TrueResSegformer weights")
-                    else:
-                        logger.warning(f"No pytorch_model.bin found at {checkpoint_path}")
-                        
-                    logger.info("Successfully initialized TrueResSegformer model")
-                except Exception as e:
-                    logger.error(f"Failed to load TrueResSegformer: {e}")
-                    logger.info("Falling back to standard SegformerForSemanticSegmentation")
-                    is_true_res = False
-            
-            # If not TrueResSegformer or fallback needed
-            if not is_true_res:
-                # Check if this is a PSPNet model
-                is_pspnet = False
-                
-                # Check config.json for PSPNet architecture
-                config_path = os.path.join(model_path, "config.json")
-                if os.path.exists(config_path):
-                    try:
-                        with open(config_path, 'r') as f:
-                            model_config_dict = json.load(f)
-                            is_pspnet = model_config_dict.get("architecture", "") == "pspnet"
-                    except Exception as e:
-                        logger.warning(f"Error reading config.json for PSPNet detection: {e}")
-                
-                # Also check from passed config
-                if config is not None:
-                    is_pspnet = is_pspnet or config.get("architecture", "") == "pspnet"
-                
-                if is_pspnet:
-                    logger.info("Detected PSPNet architecture, loading PSPNetWrapper model")
-                    try:
-                        from model import PSPNetWrapper
-                        
-                        # Load config from checkpoint or parent directory
-                        # First try checkpoint directory, then parent directory
-                        pspnet_config_path = config_path
-                        if not os.path.exists(pspnet_config_path):
-                            # Try parent directory
-                            pspnet_config_path = os.path.join(os.path.dirname(model_path), "config.json")
-                        
-                        if os.path.exists(pspnet_config_path):
-                            with open(pspnet_config_path, 'r') as f:
-                                model_config_dict = json.load(f)
-                        else:
-                            raise FileNotFoundError(f"Could not find config.json in {config_path} or {pspnet_config_path}")
-                        
-                        # Create PSPNet model
-                        backbone = model_config_dict.get("backbone", "resnet50")
-                        num_classes = len(model_config_dict.get("id2label", {"0": "__background__", "1": "tree"}))
-                        ignore_index = model_config_dict.get("semantic_loss_ignore_index", 255)
-                        
-                        # Use provided config or create default
-                        if config is None:
-                            from config import Config
-                            eval_config = Config()
-                        else:
-                            eval_config = config
-                        
-                        model = PSPNetWrapper(
-                            backbone=backbone,
-                            num_classes=num_classes,
-                            ignore_index=ignore_index,
-                            project_config=eval_config,
-                            class_weights=None  # Not needed for inference
-                        )
-                        
-                        # Load the weights
-                        checkpoint_path = os.path.join(model_path, "pytorch_model.bin")
-                        if os.path.exists(checkpoint_path):
-                            state_dict = torch.load(checkpoint_path, map_location="cpu")
-                            model.load_state_dict(state_dict, strict=True)
-                            logger.info("Successfully loaded PSPNet weights")
-                        else:
-                            logger.warning(f"No pytorch_model.bin found at {checkpoint_path}")
-                        
-                        logger.info("Successfully initialized PSPNet model")
-                    except Exception as e:
-                        logger.error(f"Failed to load PSPNet: {e}")
-                        logger.info("Falling back to standard SegformerForSemanticSegmentation")
-                        is_pspnet = False
-                
-                # If not PSPNet, check for SETR
-                if not is_pspnet:
-                    # Check if this is a SETR model
-                    is_setr = False
-                    
-                    # Check config.json for SETR architecture
-                    if os.path.exists(config_path):
-                        try:
-                            with open(config_path, 'r') as f:
-                                model_config_dict = json.load(f)
-                                is_setr = model_config_dict.get("architecture", "") == "setr"
-                        except Exception as e:
-                            logger.warning(f"Error reading config.json for SETR detection: {e}")
-                    
-                    # Also check from passed config
-                    if config is not None:
-                        is_setr = is_setr or config.get("architecture", "") == "setr"
-                    
-                    if is_setr:
-                        logger.info("Detected SETR architecture, loading SETRWrapper model")
-                        try:
-                            from model import SETRWrapper
-                            
-                            # Load config from checkpoint or parent directory
-                            # First try checkpoint directory, then parent directory
-                            setr_config_path = config_path
-                            if not os.path.exists(setr_config_path):
-                                # Try parent directory
-                                setr_config_path = os.path.join(os.path.dirname(model_path), "config.json")
-                            
-                            if os.path.exists(setr_config_path):
-                                with open(setr_config_path, 'r') as f:
-                                    model_config_dict = json.load(f)
-                            else:
-                                raise FileNotFoundError(f"Could not find config.json in {config_path} or {setr_config_path}")
-                            
-                            # Create SETR model
-                            num_classes = len(model_config_dict.get("id2label", {"0": "__background__", "1": "tree"}))
-                            ignore_index = model_config_dict.get("semantic_loss_ignore_index", 255)
-                            embed_dim = model_config_dict.get("setr_embed_dim", 768)
-                            patch_size = model_config_dict.get("setr_patch_size", 16)
-                            
-                            # Use provided config or create default
-                            if config is None:
-                                from config import Config
-                                eval_config = Config()
-                            else:
-                                eval_config = config
-                            
-                            model = SETRWrapper(
-                                num_classes=num_classes,
-                                ignore_index=ignore_index,
-                                project_config=eval_config,
-                                class_weights=None,  # Not needed for inference
-                                embed_dim=embed_dim,
-                                patch_size=patch_size
-                            )
-                            
-                            # Load the weights
-                            checkpoint_path = os.path.join(model_path, "pytorch_model.bin")
-                            if os.path.exists(checkpoint_path):
-                                state_dict = torch.load(checkpoint_path, map_location="cpu")
-                                model.load_state_dict(state_dict, strict=True)
-                                logger.info("Successfully loaded SETR weights")
-                            else:
-                                logger.warning(f"No pytorch_model.bin found at {checkpoint_path}")
-                            
-                            logger.info("Successfully initialized SETR model")
-                        except Exception as e:
-                            logger.error(f"Failed to load SETR: {e}")
-                            logger.info("Falling back to standard SegformerForSemanticSegmentation")
-                            is_setr = False
-                
-                # If not PSPNet or SETR, load SegFormer
-                if not is_pspnet and not is_setr:
-                    from transformers import SegformerForSemanticSegmentation, SegformerConfig # Added SegformerConfig
-                    try:
-                        # Use the 'config' dictionary passed to load_model_for_evaluation
-                        # to ensure the correct model architecture is loaded.
-                        hf_backbone_name = config.get('model_name') if config else None # Get HF backbone identifier, e.g., "nvidia/mit-b5"
-                        
-                        if not hf_backbone_name:
-                            logger.warning(
-                                "Key 'model_name' for backbone (e.g., 'nvidia/mit-b5') not found in 'config' dict. "
-                                "Attempting to load model without explicit architecture. This may fail if the checkpoint "
-                                f"at '{model_path}' does not contain a compatible 'config.json' or if it implies a "
-                                "different architecture than the one intended for this run."
-                            )
-                            # Fallback to original method: load model using only model_path.
-                            # This relies on model_path containing a valid config.json or being a HF model ID.
-                            model = SegformerForSemanticSegmentation.from_pretrained(model_path)
-                            logger.info(f"Successfully loaded standard SegformerForSemanticSegmentation model from '{model_path}' (no explicit backbone override from config dict).")
-                        else:
-                            logger.info(f"Explicitly configuring Segformer model architecture using backbone: '{hf_backbone_name}' "
-                                        f"and loading weights from '{model_path}'.")
-                            
-                            num_labels = config.get('num_labels')
-                            id2label = config.get('id2label')
-                            label2id = config.get('label2id')
+        if not is_local_path:
+            # ---- Remote HuggingFace model name ----
+            from transformers import SegformerForSemanticSegmentation
+            model = SegformerForSemanticSegmentation.from_pretrained(model_path)
+            logger.info(f"Loaded model from HuggingFace: {model_path}")
 
-                            # Infer num_labels if not provided but id2label or label2id is available
-                            if num_labels is None:
-                                if id2label is not None and isinstance(id2label, dict):
-                                    num_labels = len(id2label)
-                                    logger.info(f"Inferred num_labels={num_labels} from length of id2label.")
-                                elif label2id is not None and isinstance(label2id, dict):
-                                    num_labels = len(label2id)
-                                    logger.info(f"Inferred num_labels={num_labels} from length of label2id.")
-                                else:
-                                    logger.warning(
-                                        f"Key 'num_labels' not found in 'config' dict for backbone '{hf_backbone_name}', "
-                                        "and could not be inferred from id2label/label2id. "
-                                        "The number of labels will be determined by the backbone's default configuration. "
-                                        "Ensure this is intended, especially for classification heads."
-                                    )
-                            
-                            # Create the SegformerConfig object based on the specified backbone and any overrides from the config dict.
-                            seg_model_config = SegformerConfig.from_pretrained(
-                                pretrained_model_name_or_path=hf_backbone_name, # e.g., "nvidia/mit-b5"
-                                num_labels=num_labels,   # Pass None if not in config; from_pretrained will use backbone's default
-                                id2label=id2label,       # Pass None if not in config
-                                label2id=label2id        # Pass None if not in config
-                                # Add any other relevant config overrides here if needed, e.g., image_size from config dict
-                            )
-                            
-                            # Load the model weights from model_path, but use the explicitly created seg_model_config
-                            # to define the model's architecture.
-                            model = SegformerForSemanticSegmentation.from_pretrained(
-                                pretrained_model_name_or_path=model_path, # Path to the checkpoint (directory or .bin file)
-                                config=seg_model_config                   # The explicit SegformerConfig object
-                            )
-                            logger.info(
-                                f"Successfully loaded standard SegformerForSemanticSegmentation model from '{model_path}' "
-                                f"with architecture explicitly configured from backbone '{hf_backbone_name}'."
-                            )
-                    except Exception as e:
-                        # Do not raise here; allow generic fallback loader (model.pt) below
-                        logger.error(f"Failed to load standard Segformer from checkpoint: {e}")
-                        # Intentionally not raising to try generic checkpoint formats next
         else:
-            # For HF model names, just use the standard loading
-            try:
-                from transformers import SegformerForSemanticSegmentation
-                model = SegformerForSemanticSegmentation.from_pretrained(model_path)
-                logger.info(f"Successfully loaded model from Hugging Face: {model_path}")
-            except Exception as e:
-                logger.error(f"Failed to load Hugging Face model {model_path}: {e}")
-                raise
-        
-        # If neither HF nor TrueRes was resolved and this is a local path, try generic baseline layout
-        if is_local_path and 'model' not in locals():
-            generic_model_path = os.path.join(model_path, "model.pt")
-            generic_cfg_path = os.path.join(model_path, "config.json")
-            if os.path.exists(generic_model_path) and os.path.exists(generic_cfg_path):
-                with open(generic_cfg_path, 'r') as f:
-                    cfg_json = json.load(f)
-                arch = cfg_json.get("architecture", "segformer")
-                num_labels = len(cfg_json.get("id2label", {0:"__background__",1:"tree"}))
-                ignore_index = cfg_json.get("ignore_index", 255)
-                # Build the appropriate wrapper model (legacy supports: segformer, pspnet, setr)
-                if arch == "pspnet":
-                    try:
-                        from model import PSPNetWrapper
-                        backbone = cfg_json.get("backbone", "resnet50")
-                        model = PSPNetWrapper(
-                            backbone=backbone,
-                            num_classes=num_labels,
-                            ignore_index=ignore_index,
-                            project_config=config if config is not None else cfg_json,
-                            class_weights=None
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to construct PSPNetWrapper: {e}")
-                        raise
-                elif arch == "setr":
-                    try:
-                        from model import SETRWrapper
-                        embed_dim = cfg_json.get("setr_embed_dim", 768)
-                        patch_size = cfg_json.get("setr_patch_size", 16)
-                        model = SETRWrapper(
-                            num_classes=num_labels,
-                            ignore_index=ignore_index,
-                            project_config=config if config is not None else cfg_json,
-                            class_weights=None,
-                            embed_dim=embed_dim,
-                            patch_size=patch_size
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to construct SETRWrapper: {e}")
-                        raise
-                else:
-                    logger.error(f"Unsupported architecture in generic checkpoint: {arch}. Supported: segformer, pspnet, setr")
-                    raise ValueError(f"Unsupported architecture in generic checkpoint: {arch}")
+            # ---- Local checkpoint ----
+            # 1. Read config once
+            cfg = _resolve_checkpoint_config(model_path, config, logger)
+            architecture = cfg.get("architecture", "segformer")
+            logger.info(f"Detected architecture: '{architecture}'")
 
-                # Load weights
-                state_dict = torch.load(generic_model_path, map_location="cpu")
-                model.load_state_dict(state_dict, strict=True)
+            # Common fields used by most wrapper models
+            num_classes = len(cfg.get("id2label", {"0": "__background__", "1": "tree"}))
+            ignore_index = cfg.get("semantic_loss_ignore_index", 255)
+            eval_config = config if config is not None else cfg
 
-                # Attach a minimal HF-like config shim so downstream code can access id2label/label2id
-                try:
-                    # Ensure id2label keys are ints
-                    id2label_map = cfg_json.get("id2label", {})
-                    id2label_map = {int(k): v for k, v in id2label_map.items()} if isinstance(id2label_map, dict) else {}
-                    label2id_map = cfg_json.get("label2id", {})
-                    model.config = SimpleNamespace(
-                        id2label=id2label_map,
-                        label2id=label2id_map
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to attach config shim to generic model: {e}")
+            # 2. Dispatch by architecture
+            if architecture == "segformer":
+                model = _load_segformer(model_path, cfg, logger)
+
+            elif architecture == "deeplabv3":
+                from model import DeepLabV3Wrapper
+                backbone = cfg.get("backbone", "resnet50")
+                logger.info(f"Loading DeepLabV3Wrapper (backbone={backbone})")
+                model = DeepLabV3Wrapper(
+                    backbone=backbone,
+                    num_classes=num_classes,
+                    ignore_index=ignore_index,
+                    project_config=eval_config,
+                )
+                _load_weights_into_model(model, model_path, logger)
+                _attach_config_shim(model, cfg, logger)
+
+            elif architecture == "setr":
+                from model import SETRWrapper
+                embed_dim = cfg.get("setr_embed_dim", 768)
+                patch_size = cfg.get("setr_patch_size", 16)
+                logger.info(f"Loading SETRWrapper (embed_dim={embed_dim}, patch_size={patch_size})")
+                model = SETRWrapper(
+                    num_classes=num_classes,
+                    ignore_index=ignore_index,
+                    project_config=eval_config,
+                    embed_dim=embed_dim,
+                    patch_size=patch_size,
+                )
+                _load_weights_into_model(model, model_path, logger)
+                _attach_config_shim(model, cfg, logger)
+
+            elif architecture == "upernet_swin":
+                from new_architectures import UperNetSwinWrapper
+                upernet_swin_model = cfg.get("upernet_swin_model", "openmmlab/upernet-swin-base")
+                id2label_map = cfg.get("id2label", {0: "background", 1: "tree_crown"})
+                id2label_map = {int(k): v for k, v in id2label_map.items()} if isinstance(id2label_map, dict) else {}
+                label2id_map = cfg.get("label2id", {"background": 0, "tree_crown": 1})
+                logger.info(f"Loading UperNetSwinWrapper (model={upernet_swin_model})")
+                model = UperNetSwinWrapper(
+                    model_name=upernet_swin_model,
+                    num_classes=num_classes,
+                    ignore_index=ignore_index,
+                    project_config=eval_config,
+                    id2label=id2label_map,
+                    label2id=label2id_map,
+                )
+                _load_weights_into_model(model, model_path, logger)
+                _attach_config_shim(model, cfg, logger)
+
+            elif architecture == "oneformer":
+                from new_architectures import OneFormerWrapper
+                oneformer_model_name = cfg.get("oneformer_model", "shi-labs/oneformer_ade20k_swin_large")
+                id2label_map = cfg.get("id2label", {0: "background", 1: "tree_crown"})
+                id2label_map = {int(k): v for k, v in id2label_map.items()} if isinstance(id2label_map, dict) else {}
+                label2id_map = cfg.get("label2id", {"background": 0, "tree_crown": 1})
+                logger.info(f"Loading OneFormerWrapper (model={oneformer_model_name})")
+                model = OneFormerWrapper(
+                    model_name=oneformer_model_name,
+                    num_classes=num_classes,
+                    ignore_index=ignore_index,
+                    project_config=eval_config,
+                    id2label=id2label_map,
+                    label2id=label2id_map,
+                )
+                _load_weights_into_model(model, model_path, logger)
+                _attach_config_shim(model, cfg, logger)
+
             else:
-                logger.error("Local checkpoint path is not HF-style and no model.pt found.")
-                raise FileNotFoundError("Unsupported checkpoint layout")
+                raise ValueError(
+                    f"Unsupported architecture '{architecture}' in checkpoint at {model_path}. "
+                    f"Supported: segformer, deeplabv3, setr, upernet_swin, oneformer."
+                )
 
-        # Move model to device and build processor
+        # Move to device and create image processor
         model = model.to(device)
         from transformers import SegformerImageProcessor
         image_processor = SegformerImageProcessor(
             do_resize=False,
             do_rescale=True,
-            do_normalize=True
+            do_normalize=True,
         )
         return model, image_processor
-    
+
     except Exception as e:
         logger.error(f"Failed to load model from {model_path}: {e}", exc_info=True)
         raise
+
+
+def _load_segformer(model_path: str, cfg: dict, logger: logging.Logger):
+    """
+    Load a SegFormer from a local checkpoint.
+
+    Uses the HuggingFace ``from_pretrained`` API.  If a ``model_name``
+    backbone identifier is available in *cfg* it is used to explicitly
+    construct the ``SegformerConfig`` so that architecture mismatches are
+    caught early.
+    """
+    from transformers import SegformerForSemanticSegmentation, SegformerConfig
+
+    hf_backbone_name = cfg.get("model_name")  # e.g. "nvidia/mit-b5"
+
+    if not hf_backbone_name:
+        logger.info(f"Loading SegFormer directly from checkpoint (no backbone override): {model_path}")
+        model = SegformerForSemanticSegmentation.from_pretrained(model_path)
+    else:
+        logger.info(f"Loading SegFormer with backbone '{hf_backbone_name}' and weights from '{model_path}'")
+
+        # Resolve num_labels
+        id2label = cfg.get("id2label")
+        label2id = cfg.get("label2id")
+        num_labels = cfg.get("num_labels")
+        if num_labels is None:
+            if id2label and isinstance(id2label, dict):
+                num_labels = len(id2label)
+            elif label2id and isinstance(label2id, dict):
+                num_labels = len(label2id)
+
+        seg_config = SegformerConfig.from_pretrained(
+            hf_backbone_name,
+            num_labels=num_labels,
+            id2label=id2label,
+            label2id=label2id,
+        )
+        model = SegformerForSemanticSegmentation.from_pretrained(
+            model_path,
+            config=seg_config,
+        )
+
+    logger.info("Successfully loaded SegFormer model")
+    return model

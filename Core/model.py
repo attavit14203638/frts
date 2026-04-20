@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Model definition and configuration for TCD-BARE model.
+Model definition and configuration for TCD segmentation models.
 """
 
 import torch
@@ -21,8 +21,22 @@ from enum import Enum
 from config import Config
 from utils import get_logger
 
-# Note: Legacy codebase supports only SegFormer, PSPNet, SETR
-# Uses standard CrossEntropyLoss only
+# Import custom loss functions from Extended
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'Extended'))
+try:
+    from loss_functions import create_loss_function, CombinedLoss
+    CUSTOM_LOSSES_AVAILABLE = True
+except ImportError:
+    CUSTOM_LOSSES_AVAILABLE = False
+
+# Import new architectures from Extended
+try:
+    from new_architectures import OneFormerWrapper, UperNetSwinWrapper, create_new_architecture, _align_logits_labels_for_loss
+    NEW_ARCHITECTURES_AVAILABLE = True
+except ImportError:
+    NEW_ARCHITECTURES_AVAILABLE = False
 
 # Setup module logger
 logger = get_logger()
@@ -45,12 +59,13 @@ class _SimpleOutput:
 
 class SegFormerWrapper(nn.Module):
     """
-    Unified SegFormer wrapper with toggleable train-time upsampling and class weights.
+    Unified SegFormer wrapper with toggleable train-time upsampling.
 
     Wraps HuggingFace's SegformerForSemanticSegmentation:
     - Configurable train-time upsampling: when enabled, upsamples logits to input
       resolution for loss; when disabled, downscales labels to match decoder output (~H/4).
-    - Support for weighted loss to handle class imbalance
+    - Support for custom loss functions
+    - Support for custom loss types (dice, boundary, hausdorff, combined)
     - Always returns native decoder logits (~H/4 × W/4); pipeline handles final upsampling
     """
     def __init__(
@@ -59,14 +74,12 @@ class SegFormerWrapper(nn.Module):
         num_classes: int,
         ignore_index: int,
         project_config: Config,
-        class_weights: Optional[torch.Tensor] = None,
         id2label: Optional[Dict] = None,
         label2id: Optional[Dict] = None,
     ):
         super().__init__()
         self.project_config = project_config
         self.ignore_index = ignore_index
-        self.class_weights = class_weights
 
         # Gradient checkpointing support
         self.supports_gradient_checkpointing = True
@@ -97,14 +110,26 @@ class SegFormerWrapper(nn.Module):
         # Expose HF config for downstream compatibility (id2label, label2id, etc.)
         self.config = hf_config
 
-        # Initialize loss function
-        self.loss_fn = nn.CrossEntropyLoss(
-            weight=self.class_weights,
-            ignore_index=self.ignore_index
-        )
+        # Initialize loss function based on config
+        self.loss_type = project_config.get("loss_type", "cross_entropy")
+        self.loss_params = project_config.get("loss_params", {})
+        self._init_loss_function()
 
-        if class_weights is not None:
-            logger.info(f"SegFormerWrapper: Using class weights: {class_weights.tolist()}")
+    def _init_loss_function(self):
+        """Initialize the loss function based on configuration."""
+        if CUSTOM_LOSSES_AVAILABLE and self.loss_type != "cross_entropy":
+            logger.info(f"SegFormerWrapper: Using custom loss type: {self.loss_type}")
+            self.loss_fn = create_loss_function(
+                loss_type=self.loss_type,
+                loss_params=self.loss_params,
+                ignore_index=self.ignore_index
+            )
+        else:
+            if self.loss_type != "cross_entropy" and not CUSTOM_LOSSES_AVAILABLE:
+                logger.warning(f"Custom losses not available, falling back to cross_entropy")
+            self.loss_fn = nn.CrossEntropyLoss(
+                ignore_index=self.ignore_index
+            )
 
     def _set_gradient_checkpointing(self, enable=False, gradient_checkpointing_func=None):
         """Enable gradient checkpointing for memory efficiency."""
@@ -148,50 +173,55 @@ class SegFormerWrapper(nn.Module):
                 logits, labels, upsample_logits=upsample, mode=mode, align_corners=align
             )
 
-            # Compute loss
-            if hasattr(self.loss_fn, 'weight') and self.loss_fn.weight is not None:
-                self.loss_fn.weight = self.loss_fn.weight.to(logits_for_loss.device)
-            loss = self.loss_fn(logits_for_loss, labels_for_loss)
+            # Compute loss using configured loss function
+            if isinstance(self.loss_fn, CombinedLoss) if CUSTOM_LOSSES_AVAILABLE else False:
+                loss, _ = self.loss_fn(logits_for_loss, labels_for_loss)
+            else:
+                if hasattr(self.loss_fn, 'weight') and self.loss_fn.weight is not None:
+                    self.loss_fn.weight = self.loss_fn.weight.to(logits_for_loss.device)
+                loss = self.loss_fn(logits_for_loss, labels_for_loss)
 
         return _SimpleOutput(loss=loss, logits=logits)
 
 
-# --- BARE Strategy Helper Functions ---
-def _align_logits_labels_for_loss(
-    logits: torch.Tensor,
-    labels: torch.Tensor,
-    upsample_logits: bool = True,
-    mode: str = "bilinear",
-    align_corners: Optional[bool] = False
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Align logits and labels to the same spatial resolution for loss computation."""
-    if logits.shape[-2:] == labels.shape[-2:]:
-        return logits, labels
-    if upsample_logits:
-        align_param = align_corners if mode != "nearest" else None
-        resized_logits = F.interpolate(logits, size=labels.shape[-2:], mode=mode, align_corners=align_param)
-        return resized_logits, labels
-    else:
-        resized_labels = F.interpolate(
-            labels.unsqueeze(1).float(), size=logits.shape[-2:], mode="nearest"
-        ).squeeze(1).long()
-        return logits, resized_labels
+# --- Train-time Upsampling Helper Functions ---
+# _align_logits_labels_for_loss is the canonical definition in new_architectures.py.
+# It is imported above; a local fallback is defined here only if that import failed.
+if not NEW_ARCHITECTURES_AVAILABLE:
+    def _align_logits_labels_for_loss(
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        upsample_logits: bool = True,
+        mode: str = "bilinear",
+        align_corners: Optional[bool] = False
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Align logits and labels to the same spatial resolution for loss computation."""
+        if logits.shape[-2:] == labels.shape[-2:]:
+            return logits, labels
+        if upsample_logits:
+            align_param = align_corners if mode != "nearest" else None
+            resized_logits = F.interpolate(logits, size=labels.shape[-2:], mode=mode, align_corners=align_param)
+            return resized_logits, labels
+        else:
+            resized_labels = F.interpolate(
+                labels.unsqueeze(1).float(), size=logits.shape[-2:], mode="nearest"
+            ).squeeze(1).long()
+            return logits, resized_labels
 
 
-def _build_smp_pspnet(backbone: str, num_classes: int) -> nn.Module:
+def _build_smp_deeplabv3(backbone: str, num_classes: int) -> nn.Module:
     try:
         import segmentation_models_pytorch as smp
     except Exception as e:
         raise RuntimeError(
-            "segmentation-models-pytorch is required for architecture='pspnet'. Install with 'pip install segmentation-models-pytorch timm'"
+            "segmentation-models-pytorch is required for architecture='deeplabv3'. Install with 'pip install segmentation-models-pytorch timm'"
         ) from e
-    model = smp.PSPNet(
+    model = smp.DeepLabV3(
         encoder_name=backbone,
         encoder_weights="imagenet",
         in_channels=3,
         classes=num_classes,
-        encoder_depth=3,
-        upsampling=1,  # Output at H/8 resolution (native reduced resolution)
+        upsampling=1,
     )
     return model
 
@@ -287,24 +317,37 @@ def _build_simple_setr(num_classes: int, embed_dim: int = 768, patch_size: int =
     return SETRModel(backbone, decoder)
 
 
-class PSPNetWrapper(nn.Module):
+class DeepLabV3Wrapper(nn.Module):
     def __init__(
         self,
         backbone: str,
         num_classes: int,
         ignore_index: int,
-        project_config: Config,
-        class_weights: Optional[torch.Tensor]
+        project_config: Config
     ) -> None:
         super().__init__()
-        self.net = _build_smp_pspnet(backbone=backbone, num_classes=num_classes)
+        self.net = _build_smp_deeplabv3(backbone=backbone, num_classes=num_classes)
         self.ignore_index = ignore_index
         self.project_config = project_config
-        self.class_weights = class_weights
-        self.loss_fn = nn.CrossEntropyLoss(
-            weight=self.class_weights,
-            ignore_index=self.ignore_index
-        )
+        self.loss_type = project_config.get("loss_type", "cross_entropy")
+        self.loss_params = project_config.get("loss_params", {})
+        self._init_loss_function()
+
+    def _init_loss_function(self):
+        """Initialize the loss function based on configuration."""
+        if CUSTOM_LOSSES_AVAILABLE and self.loss_type != "cross_entropy":
+            logger.info(f"DeepLabV3Wrapper: Using custom loss type: {self.loss_type}")
+            self.loss_fn = create_loss_function(
+                loss_type=self.loss_type,
+                loss_params=self.loss_params,
+                ignore_index=self.ignore_index
+            )
+        else:
+            if self.loss_type != "cross_entropy" and not CUSTOM_LOSSES_AVAILABLE:
+                logger.warning(f"Custom losses not available, falling back to cross_entropy")
+            self.loss_fn = nn.CrossEntropyLoss(
+                ignore_index=self.ignore_index
+            )
 
     def forward(self, pixel_values: torch.Tensor, labels: Optional[torch.LongTensor] = None) -> _SimpleOutput:
         logits = self.net(pixel_values)
@@ -316,9 +359,12 @@ class PSPNetWrapper(nn.Module):
             logits_for_loss, labels_for_loss = _align_logits_labels_for_loss(
                 logits, labels, upsample_logits=upsample, mode=mode, align_corners=align
             )
-            if hasattr(self.loss_fn, 'weight') and self.loss_fn.weight is not None:
-                self.loss_fn.weight = self.loss_fn.weight.to(logits_for_loss.device)
-            loss = self.loss_fn(logits_for_loss, labels_for_loss)
+            if isinstance(self.loss_fn, CombinedLoss) if CUSTOM_LOSSES_AVAILABLE else False:
+                loss, _ = self.loss_fn(logits_for_loss, labels_for_loss)
+            else:
+                if hasattr(self.loss_fn, 'weight') and self.loss_fn.weight is not None:
+                    self.loss_fn.weight = self.loss_fn.weight.to(logits_for_loss.device)
+                loss = self.loss_fn(logits_for_loss, labels_for_loss)
         return _SimpleOutput(loss=loss, logits=logits)
 
 
@@ -328,7 +374,6 @@ class SETRWrapper(nn.Module):
         num_classes: int,
         ignore_index: int,
         project_config: Config,
-        class_weights: Optional[torch.Tensor],
         embed_dim: int = 768,
         patch_size: int = 16
     ) -> None:
@@ -343,13 +388,27 @@ class SETRWrapper(nn.Module):
         )
         self.ignore_index = ignore_index
         self.project_config = project_config
-        self.class_weights = class_weights
         self.input_size = input_size
-        self.loss_fn = nn.CrossEntropyLoss(
-            weight=self.class_weights,
-            ignore_index=self.ignore_index
-        )
+        self.loss_type = project_config.get("loss_type", "cross_entropy")
+        self.loss_params = project_config.get("loss_params", {})
+        self._init_loss_function()
         logger.info(f"SETRWrapper initialized for native {input_size}×{input_size} processing")
+
+    def _init_loss_function(self):
+        """Initialize the loss function based on configuration."""
+        if CUSTOM_LOSSES_AVAILABLE and self.loss_type != "cross_entropy":
+            logger.info(f"SETRWrapper: Using custom loss type: {self.loss_type}")
+            self.loss_fn = create_loss_function(
+                loss_type=self.loss_type,
+                loss_params=self.loss_params,
+                ignore_index=self.ignore_index
+            )
+        else:
+            if self.loss_type != "cross_entropy" and not CUSTOM_LOSSES_AVAILABLE:
+                logger.warning(f"Custom losses not available, falling back to cross_entropy")
+            self.loss_fn = nn.CrossEntropyLoss(
+                ignore_index=self.ignore_index
+            )
 
     def forward(self, pixel_values: torch.Tensor, labels: Optional[torch.LongTensor] = None) -> _SimpleOutput:
         # SETR decoder outputs at (H/patch_size × W/patch_size) resolution
@@ -363,9 +422,12 @@ class SETRWrapper(nn.Module):
             logits_for_loss, labels_for_loss = _align_logits_labels_for_loss(
                 logits, labels, upsample_logits=upsample, mode=mode, align_corners=align
             )
-            if hasattr(self.loss_fn, 'weight') and self.loss_fn.weight is not None:
-                self.loss_fn.weight = self.loss_fn.weight.to(logits_for_loss.device)
-            loss = self.loss_fn(logits_for_loss, labels_for_loss)
+            if isinstance(self.loss_fn, CombinedLoss) if CUSTOM_LOSSES_AVAILABLE else False:
+                loss, _ = self.loss_fn(logits_for_loss, labels_for_loss)
+            else:
+                if hasattr(self.loss_fn, 'weight') and self.loss_fn.weight is not None:
+                    self.loss_fn.weight = self.loss_fn.weight.to(logits_for_loss.device)
+                loss = self.loss_fn(logits_for_loss, labels_for_loss)
         return _SimpleOutput(loss=loss, logits=logits)
 
 def create_scheduler(
@@ -476,8 +538,7 @@ def create_scheduler(
 def create_model(
     config: Config,
     num_training_steps: int,
-    class_weights: Optional[torch.Tensor] = None,
-    logger: Optional[logging.Logger] = None  # Added logger parameter
+    logger: Optional[logging.Logger] = None
 ) -> Tuple[nn.Module, torch.optim.Optimizer, Optional[torch.optim.lr_scheduler._LRScheduler]]:
     if logger is None: # Fallback logger if not provided
         logger = get_logger()
@@ -494,20 +555,21 @@ def create_model(
     if architecture == "segformer":
         model_identifier = model_name
         logger.info(f"Attempting to load architecture: {architecture} (model_name={model_name})")
-    elif architecture == "pspnet":
+    elif architecture == "deeplabv3":
         model_identifier = backbone
         logger.info(f"Attempting to load architecture: {architecture} (backbone={backbone})")
     elif architecture == "setr":
         model_identifier = f"SETR (embed_dim={config.get('setr_embed_dim', 768)}, patch_size={config.get('setr_patch_size', 16)})"
         logger.info(f"Attempting to load architecture: {architecture} (embed_dim={config.get('setr_embed_dim', 768)}, patch_size={config.get('setr_patch_size', 16)})")
+    elif architecture == "oneformer":
+        model_identifier = config.get("oneformer_model", "shi-labs/oneformer_ade20k_swin_large")
+        logger.info(f"Attempting to load architecture: {architecture} (model={model_identifier})")
+    elif architecture == "upernet_swin":
+        model_identifier = config.get("upernet_swin_model", "openmmlab/upernet-swin-base")
+        logger.info(f"Attempting to load architecture: {architecture} (model={model_identifier})")
     else:
         model_identifier = architecture
         logger.info(f"Attempting to load architecture: {architecture}")
-
-    if class_weights is not None:
-        logger.info(f"Class weights enabled. Weights: {class_weights.tolist()}")
-    else:
-        logger.info("Class weights disabled; proceeding with uniform weighting.")
 
     learning_rate = config["learning_rate"]
     weight_decay = config["weight_decay"]
@@ -522,18 +584,16 @@ def create_model(
             num_classes=num_labels,
             ignore_index=config.get("ignore_index", 255),
             project_config=config,
-            class_weights=class_weights if config.get("class_weights_enabled", False) else None,
             id2label=id2label,
             label2id=label2id,
         )
-    elif architecture == "pspnet":
-        logger.info(f"Initializing PSPNet (backbone={backbone})")
-        model = PSPNetWrapper(
+    elif architecture == "deeplabv3":
+        logger.info(f"Initializing DeepLabV3 (backbone={backbone})")
+        model = DeepLabV3Wrapper(
             backbone=backbone,
             num_classes=num_labels,
             ignore_index=config.get("ignore_index", 255),
-            project_config=config,
-            class_weights=class_weights if config.get("class_weights_enabled", False) else None
+            project_config=config
         )
     elif architecture == "setr":
         embed_dim = config.get("setr_embed_dim", 768)
@@ -543,12 +603,43 @@ def create_model(
             num_classes=num_labels,
             ignore_index=config.get("ignore_index", 255),
             project_config=config,
-            class_weights=class_weights if config.get("class_weights_enabled", False) else None,
             embed_dim=embed_dim,
             patch_size=patch_size
         )
+    elif architecture == "oneformer":
+        if not NEW_ARCHITECTURES_AVAILABLE:
+            raise RuntimeError(
+                "New architectures module not available. Ensure Extended/new_architectures.py exists "
+                "and transformers>=4.30.0 is installed."
+            )
+        oneformer_model = config.get("oneformer_model", "shi-labs/oneformer_ade20k_swin_large")
+        logger.info(f"Initializing OneFormer (model={oneformer_model})")
+        model = OneFormerWrapper(
+            model_name=oneformer_model,
+            num_classes=num_labels,
+            ignore_index=config.get("ignore_index", 255),
+            project_config=config,
+            id2label=id2label,
+            label2id=label2id,
+        )
+    elif architecture == "upernet_swin":
+        if not NEW_ARCHITECTURES_AVAILABLE:
+            raise RuntimeError(
+                "New architectures module not available. Ensure Extended/new_architectures.py exists "
+                "and transformers>=4.30.0 is installed."
+            )
+        upernet_swin_model = config.get("upernet_swin_model", "openmmlab/upernet-swin-base")
+        logger.info(f"Initializing UperNet+Swin (model={upernet_swin_model})")
+        model = UperNetSwinWrapper(
+            model_name=upernet_swin_model,
+            num_classes=num_labels,
+            ignore_index=config.get("ignore_index", 255),
+            project_config=config,
+            id2label=id2label,
+            label2id=label2id,
+        )
     else:
-        raise ValueError(f"Unsupported architecture: {architecture}. Supported: segformer, pspnet, setr")
+        raise ValueError(f"Unsupported architecture: {architecture}. Supported: segformer, deeplabv3, setr, oneformer, upernet_swin")
 
     model.to(device) # Move model to device before optimizer creation and checkpoint loading
 

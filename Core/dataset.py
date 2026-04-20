@@ -29,6 +29,16 @@ from exceptions import (
 from image_utils import ensure_rgb, ensure_mask_shape
 from utils import get_logger # Use get_logger
 
+# Import external dataset loaders from Extended
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'Extended'))
+try:
+    from datasets_loader import UnifiedTreeDataset, load_tree_dataset, list_supported_datasets
+    EXTERNAL_DATASETS_AVAILABLE = True
+except ImportError:
+    EXTERNAL_DATASETS_AVAILABLE = False
+
 # Setup module logger
 logger = get_logger()
 
@@ -540,6 +550,86 @@ def load_and_shuffle_dataset(
     return dataset_dict
 
 
+def load_external_dataset(
+    dataset_name: str,
+    config: Config,
+    split: str = "train",
+    transform: Optional[Callable] = None,
+) -> Optional[UnifiedTreeDataset]:
+    """
+    Load an external tree crown dataset for cross-dataset validation.
+    
+    This function handles loading datasets from local paths specified in config.
+    For HuggingFace datasets (like restor/tcd), use load_and_shuffle_dataset instead.
+    
+    Args:
+        dataset_name: Name of the dataset (selvamask, bamforests, savannatreeai, quebec, etc.)
+        config: Configuration object containing dataset_paths
+        split: Dataset split ('train', 'val', 'test')
+        transform: Optional transform to apply
+        
+    Returns:
+        UnifiedTreeDataset instance, or None if external datasets not available
+        
+    Raises:
+        DatasetError: If dataset cannot be loaded
+        ValueError: If dataset path not configured
+    """
+    if not EXTERNAL_DATASETS_AVAILABLE:
+        raise DatasetError(
+            "External datasets module not available. "
+            "Ensure Extended/datasets_loader.py exists."
+        )
+    
+    # Check if this is a HuggingFace dataset
+    hf_datasets = ['restor/tcd', 'oam_tcd', 'tcd']
+    if dataset_name.lower() in hf_datasets:
+        logger.info(f"Loading HuggingFace dataset: {dataset_name}")
+        return load_tree_dataset(
+            dataset_name=dataset_name,
+            split=split,
+            transform=transform,
+        )
+    
+    # Get path from config
+    dataset_paths = config.get("dataset_paths", {})
+    root_dir = dataset_paths.get(dataset_name.lower())
+    
+    if root_dir is None:
+        raise ValueError(
+            f"No path configured for dataset '{dataset_name}'. "
+            f"Set config['dataset_paths']['{dataset_name.lower()}'] to the dataset directory."
+        )
+    
+    logger.info(f"Loading external dataset '{dataset_name}' from: {root_dir}")
+    
+    try:
+        dataset = load_tree_dataset(
+            dataset_name=dataset_name,
+            root_dir=root_dir,
+            split=split,
+            transform=transform,
+        )
+        logger.info(f"Successfully loaded {len(dataset)} samples from '{dataset_name}' ({split} split)")
+        return dataset
+    except Exception as e:
+        raise DatasetError(f"Failed to load external dataset '{dataset_name}': {e}")
+
+
+def is_external_dataset(dataset_name: str) -> bool:
+    """
+    Check if a dataset name refers to an external (non-HuggingFace) dataset.
+    
+    Args:
+        dataset_name: Name of the dataset
+        
+    Returns:
+        True if external dataset, False if HuggingFace dataset
+    """
+    hf_datasets = ['restor/tcd', 'oam_tcd', 'tcd']
+    return dataset_name.lower() not in hf_datasets
+
+
 def load_evaluation_dataset(
     dataset_name: str,
     validation_split: float = 0.1,
@@ -845,6 +935,8 @@ def create_dataloaders(
 
 
     # Create dataloaders
+    # drop_last=True prevents a final batch with size 1, which crashes BatchNorm
+    # layers (e.g. DeepLabV3 ASPP pooling) that require >1 value per channel.
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=train_batch_size,
@@ -853,7 +945,7 @@ def create_dataloaders(
         pin_memory=config.get("dataloader_pin_memory", True) and torch.cuda.is_available(),
         persistent_workers=config.get("dataloader_persistent_workers", True) and num_workers > 0,
         prefetch_factor=config.get("dataloader_prefetch_factor", 2) if num_workers > 0 else None,
-        drop_last=False
+        drop_last=True
     )
 
     eval_dataloader = DataLoader(
@@ -953,3 +1045,79 @@ def create_dataset_from_masks(
             return encoding
 
     return CustomSegmentationDataset(images, masks, image_processor, transform)
+
+
+class ExternalDatasetAdapter(Dataset):
+    """
+    Adapter that wraps external tree datasets (from datasets_loader.py) to produce
+    {'pixel_values': Tensor, 'labels': Tensor} compatible with the pipeline eval loop.
+    
+    External datasets return {'image': PIL.Image, 'mask': PIL.Image}.
+    This adapter applies SegformerImageProcessor and binarizes masks.
+    """
+    
+    def __init__(
+        self,
+        external_dataset,
+        image_processor: Optional[SegformerImageProcessor] = None,
+        target_size: Optional[Tuple[int, int]] = None,
+    ):
+        """
+        Args:
+            external_dataset: A dataset object with __len__ and __getitem__ 
+                returning {'image': PIL.Image, 'mask': PIL.Image}
+            image_processor: SegformerImageProcessor for normalization. Created if None.
+            target_size: Optional (H, W) to resize all samples to a fixed size.
+        """
+        self.dataset = external_dataset
+        self.target_size = target_size
+        
+        if image_processor is None:
+            self.image_processor = SegformerImageProcessor(
+                do_resize=False,
+                do_rescale=True,
+                do_normalize=True
+            )
+        else:
+            self.image_processor = image_processor
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        sample = self.dataset[idx]
+        image = sample['image']
+        mask = sample['mask']
+        
+        # Ensure RGB
+        if not isinstance(image, Image.Image):
+            image = Image.fromarray(np.array(image))
+        image = image.convert('RGB')
+        
+        # Ensure single-channel mask
+        if not isinstance(mask, Image.Image):
+            mask = Image.fromarray(np.array(mask))
+        if mask.mode != 'L':
+            mask = mask.convert('L')
+        
+        # Optional resize
+        if self.target_size is not None:
+            image = TF.resize(image, self.target_size, interpolation=T.InterpolationMode.BILINEAR)
+            mask = TF.resize(mask, self.target_size, interpolation=T.InterpolationMode.NEAREST)
+        
+        # Binarize mask, preserving ignore_index (255) for partially-annotated datasets (e.g. Quebec)
+        mask_np = np.array(mask)
+        ignore_mask = mask_np == 255
+        mask_np = (mask_np > 0).astype(np.uint8)
+        mask_np[ignore_mask] = 255
+        
+        # Apply image processor
+        encoding = self.image_processor(image, mask_np, return_tensors="pt")
+        
+        pixel_values = encoding['pixel_values'].squeeze(0)
+        labels = encoding['labels'].squeeze(0).long()
+        
+        return {
+            'pixel_values': pixel_values,
+            'labels': labels
+        }

@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Unified Command-Line Interface for TCD-BARE.
+Unified Command-Line Interface for TCD segmentation.
 
-This script serves as the main entry point for interacting with the TCD-BARE
-project. It provides subcommands for training, evaluation, prediction, and dataset inspection.
+This script serves as the main entry point for interacting with the TCD
+segmentation project. It provides subcommands for training, evaluation, prediction, and dataset inspection.
 
 Subcommands:
   train     Train a new segmentation model.
@@ -63,10 +63,10 @@ def setup_train_parser(subparsers, parent_parser):
     # Model parameters
     parser.add_argument("--model_name", type=str,
                         help="Base model name (overrides config)")
-    parser.add_argument("--architecture", type=str, choices=["segformer","pspnet","setr"],
-                        help="Model architecture: segformer | pspnet | setr (overrides config)")
+    parser.add_argument("--architecture", type=str, choices=["segformer","deeplabv3","setr","oneformer","upernet_swin"],
+                        help="Model architecture (overrides config)")
     parser.add_argument("--backbone", type=str,
-                        help="Backbone for pspnet (e.g., resnet50). Overrides config")
+                        help="Backbone for deeplabv3 (e.g., resnet50). Overrides config")
     parser.add_argument("--output_dir", type=str,
                         help="Directory for outputs (overrides config)")
 
@@ -89,8 +89,6 @@ def setup_train_parser(subparsers, parent_parser):
                         help="Gradient accumulation steps (overrides config)")
     parser.add_argument("--num_workers", type=int,
                         help="Dataloader workers (overrides config)")
-    parser.add_argument("--compute_class_weights", action=argparse.BooleanOptionalAction,
-                        help="Compute class weights (overrides config)")
     parser.add_argument("--train_time_upsample", action=argparse.BooleanOptionalAction, default=None,
                         help="Enable train-time upsampling for all models during training (overrides config).")
 
@@ -508,7 +506,7 @@ from inspect_dataset import verify_training_tiling # Import the function - Alrea
 def main():
     """Main entry point for the script."""
     parent_parser = create_parent_parser()
-    parser = argparse.ArgumentParser(description="TCD-BARE: Train, Evaluate, Predict, Inspect, Verify Tiling")
+    parser = argparse.ArgumentParser(description="TCD: Train, Evaluate, Predict, Inspect, Verify Tiling")
     subparsers = parser.add_subparsers(title="Available Commands", dest="command", required=True)
 
     # Setup parsers for each command, passing the parent

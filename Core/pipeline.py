@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Centralized pipeline for TCD-BARE.
+Centralized pipeline for TCD segmentation.
 
 This module provides unified entry points for training, evaluation, and prediction
-of the TCD-BARE model, consolidating functionality that was previously spread
+of TCD segmentation models, consolidating functionality that was previously spread
 across multiple files.
 """
 
@@ -27,7 +27,6 @@ from transformers import SegformerForSemanticSegmentation, SegformerImageProcess
 from config import Config
 from dataset import load_and_shuffle_dataset, create_dataloaders, create_dataset_from_masks
 from model import create_model
-from weights import compute_class_pixel_distribution
 from checkpoint import save_checkpoint, load_checkpoint, verify_checkpoint
 from metrics import (
     calculate_metrics, calculate_boundary_iou,
@@ -85,7 +84,7 @@ def run_training_pipeline(
     fold_dataset_dict: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Run the complete TCD-BARE training pipeline.
+    Run the complete TCD training pipeline.
 
     Args:
         config: Configuration object
@@ -109,14 +108,16 @@ def run_training_pipeline(
     arch = config.get("architecture", "segformer")
     _arch_param_keys = {
         "segformer": ["model_name"],
-        "pspnet": ["backbone"],
+        "deeplabv3": ["backbone"],
         "setr": ["setr_embed_dim", "setr_patch_size", "setr_input_size"],
+        "oneformer": ["oneformer_model"],
+        "upernet_swin": ["upernet_swin_model"],
     }
     _shared_keys = [
         "architecture", "dataset_name", "num_epochs", "train_batch_size",
         "learning_rate", "weight_decay", "gradient_accumulation_steps",
-        "mixed_precision", "train_time_upsample",
-        "class_weights_enabled", "scheduler_type", "output_dir", "seed",
+        "mixed_precision", "loss_type", "train_time_upsample",
+        "scheduler_type", "output_dir", "seed",
     ]
     _active_keys = _shared_keys + _arch_param_keys.get(arch, [])
     _active_config = {k: config.get(k) for k in _active_keys if config.get(k) is not None}
@@ -126,20 +127,9 @@ def run_training_pipeline(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log_or_print(f"Using device: {device}", logger, logging.INFO, is_notebook)
 
-    # Log train-time upsampling and BARE strategy status for all architectures
+    # Log train-time upsampling status for all architectures
     upsample_status = "enabled" if config.get('train_time_upsample', False) else "disabled"
     log_or_print(f"Train-time upsampling for {arch.upper()} is {upsample_status}", logger, logging.INFO, is_notebook)
-    
-    class_weights_enabled = config.get('class_weights_enabled', False)
-    train_upsample_enabled = config.get('train_time_upsample', False)
-    if class_weights_enabled and train_upsample_enabled:
-        log_or_print(f"BARE strategy (class weights + train-time upsampling) is ENABLED for {arch.upper()}", logger, logging.INFO, is_notebook)
-    elif class_weights_enabled:
-        log_or_print(f"Partial BARE strategy: class weights enabled, train-time upsampling disabled for {arch.upper()}", logger, logging.INFO, is_notebook)
-    elif train_upsample_enabled:
-        log_or_print(f"Partial BARE strategy: train-time upsampling enabled, class weights disabled for {arch.upper()}", logger, logging.INFO, is_notebook)
-    else:
-        log_or_print(f"Baseline mode: no BARE strategy applied for {arch.upper()}", logger, logging.INFO, is_notebook)
 
     # Load dataset - either use provided fold dataset or load a new one
     if fold_dataset_dict is not None:
@@ -172,26 +162,6 @@ def run_training_pipeline(
         # Removed: image_size=config["image_size"]
     )
 
-    # Compute class weights if configured - uses full dataset
-    class_weights = None
-    if config["class_weights_enabled"]:
-        try:
-            log_or_print("Class weights enabled. Computing weights from pixel distribution...", logger, logging.INFO, is_notebook)
-            class_weights, class_counts = compute_class_pixel_distribution(
-                dataset_dict["train"],
-                num_labels=len(id2label),
-                logger=logger
-            )
-            log_or_print(f"Class weights: {class_weights}", logger, logging.INFO, is_notebook)
-            log_or_print(f"Class counts: {class_counts}", logger, logging.INFO, is_notebook)
-            # Note: The function already logs the class weights automatically
-        except Exception as e:
-            log_or_print(f"Error computing class weights: {str(e)}. Using uniform weights.", 
-                        logger, logging.WARNING, is_notebook)
-            class_weights = None
-    else:
-        log_or_print("Class weights disabled. Using uniform class weighting.", logger, logging.INFO, is_notebook)
-
     # Update config with id2label and label2id
     config["id2label"] = id2label
     config["label2id"] = label2id
@@ -200,7 +170,6 @@ def run_training_pipeline(
     model, optimizer, scheduler = create_model(
         config=config,  # Pass config object
         num_training_steps=len(train_dataloader) * config["num_epochs"] // config["gradient_accumulation_steps"],
-        class_weights=class_weights,
         logger=logger # Pass logger for checkpoint loading messages
     )
 
@@ -275,7 +244,7 @@ def run_training_pipeline(
             'scheduler': scheduler.state_dict()
         }, os.path.join(final_model_dir, "optimizer_scheduler.pt"))
     else:
-        # For PSPNet, SETR, and other custom models, save a standardized checkpoint
+        # For DeepLabV3, SETR, and other custom models, save a standardized checkpoint
         # This ensures 'pytorch_model.bin' and 'config.json' are created correctly
         final_step = len(train_dataloader) * config["num_epochs"] // config["gradient_accumulation_steps"]
         save_checkpoint(
@@ -859,7 +828,7 @@ def run_prediction_pipeline(
     is_notebook: bool = False
 ) -> Dict[str, Any]:
     """
-    Run the complete TCD-BARE prediction pipeline.
+    Run the complete TCD prediction pipeline.
 
     Args:
         config: Configuration object
@@ -925,7 +894,7 @@ def run_prediction_pipeline(
         log_or_print(error_msg, logger, logging.ERROR, is_notebook)
         raise
 
-    # Load id2label/label2id mapping with fallback for non-HF models (e.g., PSPNetWrapper)
+    # Load id2label/label2id mapping with fallback for non-HF models (e.g., DeepLabV3Wrapper)
     try:
         id2label = model.config.id2label  # type: ignore[attr-defined]
         label2id = model.config.label2id  # type: ignore[attr-defined]
